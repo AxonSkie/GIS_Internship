@@ -1,0 +1,20 @@
+# Environment variables
+Backend/.env
+
+# Python virtual environment
+Backend/venv/
+
+# Python cache
+Backend/__pycache__/
+Backend/routers/__pycache__/
+*.pyc
+
+# Node modules
+Frontend/node_modules/
+
+# Vite build output
+Frontend/dist/
+
+# Environment files
+Frontend/.env
+Frontend/.env.local

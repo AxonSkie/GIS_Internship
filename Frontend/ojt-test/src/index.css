@@ -1,0 +1,39 @@
+@import "tailwindcss";
+
+.leaflet-tooltip.map-feature-label {
+  background: transparent;
+  border: 0;
+  color: #1e293b;
+  font-size: 20px;
+  font-weight: 800;
+  padding: 0;
+  box-shadow: none;
+  text-shadow:
+    -1px -1px 0 #fff,
+    1px -1px 0 #fff,
+    -1px 1px 0 #fff,
+    1px 1px 0 #fff;
+}
+
+.leaflet-tooltip.barangay-feature-label {
+  background: transparent;
+  border: 0;
+  color: #1e293b;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0;
+  box-shadow: none;
+  text-shadow:
+    -1px -1px 0 #fff,
+    1px -1px 0 #fff,
+    -1px 1px 0 #fff,
+    1px 1px 0 #fff;
+}
+
+.leaflet-tooltip.map-feature-label::before {
+  display: none;
+}
+
+.leaflet-tooltip.barangay-feature-label::before {
+  display: none;
+}
