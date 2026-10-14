@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import api from "../services/api";
 import { Ellipsis, MapPin, X } from "lucide-react";
+
 
 
 import {
@@ -54,6 +55,19 @@ const rawDataColumns = [
   { key: "data_source", label: "Data Source" },
   { key: "description", label: "Description" },
   { key: "data_privacy", label: "Data Privacy" },
+];
+
+const processedDataColumns = [
+  { key: "Main Folder", label: "Main Folder" },
+  { key: "Folder Name", label: "Folder Name" },
+  { key: "Full path", label: "Full Path" },
+  { key: "PSCG", label: "PSCG" },
+  { key: "File Size", label: "File Size (bytes)" },
+  { key: "UAV Mission ID", label: "UAV Mission ID" },
+  { key: "Creation date", label: "Creation Date" },
+  { key: "Data source", label: "Data Source" },
+  { key: "Description", label: "Description" },
+  { key: "Data Privacy", label: "Data Privacy" },
 ];
 
 function formatValue(key, value) {
@@ -159,6 +173,38 @@ function getMunicipalityCodeFromPSGC(psgc) {
   return municipalityPSGC[parentPSGC] ? parentPSGC : null;
 }
 
+function getMunicipalityCodeFromName(name) {
+  const normalizedName = normalizeMunicipalityName(name);
+  const municipality = Object.entries(municipalityPSGC).find(
+    ([, municipalityName]) =>
+      normalizeMunicipalityName(municipalityName) === normalizedName
+  );
+
+  return municipality?.[0] ?? null;
+}
+
+function getLocationCounts(records, getPSGC) {
+  const municipalityCounts = new Map();
+  const barangayCounts = new Map();
+
+  records.forEach((record) => {
+    const psgc = String(getPSGC(record) ?? "").trim();
+    const municipalityCode = getMunicipalityCodeFromPSGC(psgc);
+
+    if (!municipalityCode) {
+      return;
+    }
+
+    municipalityCounts.set(
+      municipalityCode,
+      (municipalityCounts.get(municipalityCode) ?? 0) + 1
+    );
+    barangayCounts.set(psgc, (barangayCounts.get(psgc) ?? 0) + 1);
+  });
+
+  return { municipalityCounts, barangayCounts };
+}
+
 function DataTabs({ activeTab, onTabChange }) {
   return (
     <nav
@@ -187,28 +233,38 @@ function DataTabs({ activeTab, onTabChange }) {
       >
         Raw Data
       </button>
+
+      <button
+        type="button"
+        onClick={() => onTabChange("processed")}
+        className={`border-b-2 px-4 py-3 text-sm font-semibold transition ${
+          activeTab === "processed"
+            ? "border-indigo-600 text-indigo-700"
+            : "border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700"
+        }`}
+      >
+        Processed Data
+      </button>
+
     </nav>
   );
 }
 
 function RawDataTab({
-  onTabChange,
   onHighlightRecord,
+  onRecordsLoaded,
   barangayData,
+  searchTerm,
+  dateFrom,
+  dateTo,
   municipalityFilter,
-  setMunicipalityFilter,
   barangayFilter,
-  setBarangayFilter,
   districtFilter,
-  setDistrictFilter,
 }) {
   const [rawData, setRawData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
-  const [searchTerm, setSearchTerm] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
   const [selectedRecord, setSelectedRecord] = useState(null);
   const detailsDialogRef = useRef(null);
 
@@ -224,6 +280,7 @@ function RawDataTab({
 
         if (isActive) {
           setRawData(response.data);
+          onRecordsLoaded(response.data);
         }
       } catch (err) {
         console.error("Error fetching raw data:", err);
@@ -243,7 +300,7 @@ function RawDataTab({
     return () => {
       isActive = false;
     };
-  }, [retryCount]);
+  }, [onRecordsLoaded, retryCount]);
 
   useEffect(() => {
     if (
@@ -274,45 +331,6 @@ const districtMunicipalityCodes = new Map();
 
   districtMunicipalityCodes.get(district).add(municipalityCode);
 });
-const municipalityOptions = Object.entries(municipalityPSGC)
-  .filter(
-    ([code]) =>
-      !districtFilter ||
-      districtMunicipalityCodes.get(districtFilter)?.has(code)
-  )
-  .sort(([, firstName], [, secondName]) =>
-    firstName.localeCompare(secondName)
-  );
-const barangayOptions = (barangayData?.features ?? [])
-  .filter(
-    (feature) => {
-      const matchesMunicipality =
-        !municipalityFilter ||
-        String(feature.properties?.PSGC_CODE ?? "")
-        .trim()
-          .substring(0, 7) === municipalityFilter.substring(0, 7);
-      const matchesDistrict =
-        !districtFilter ||
-        String(feature.properties?.DISTRICT ?? "").trim() === districtFilter;
-
-      return matchesMunicipality && matchesDistrict;
-    }
-  )
-  .sort((first, second) =>
-    String(first.properties?.NAME ?? "").localeCompare(
-      String(second.properties?.NAME ?? "")
-    )
-  );
-const districtFeatures = municipalityFilter
-  ? barangayOptions
-  : barangayData?.features ?? [];
-const districtOptions = [
-  ...new Set(
-    districtFeatures
-      .map((feature) => String(feature.properties?.DISTRICT ?? "").trim())
-      .filter(Boolean)
-  ),
-].sort((first, second) => first.localeCompare(second));
 const filteredRawData = rawData.filter((record) => {
   const matchesSearch =
     !normalizedSearch ||
@@ -346,16 +364,6 @@ const filteredRawData = rawData.filter((record) => {
     matchesDistrict
   );
 });
-const hasActiveFilters = Boolean(
-  normalizedSearch ||
-    dateFrom ||
-    dateTo ||
-    municipalityFilter ||
-    barangayFilter ||
-    districtFilter
-);
-
-
   return (
 <>
 
@@ -431,117 +439,6 @@ const hasActiveFilters = Boolean(
   )}
 </dialog>
 
-    {!loading && !error && (
-      <section
-        aria-label="Filter raw data"
-        className="mb-4 flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm sm:flex-row sm:items-end"
-      >
-        <label className="flex min-w-56 flex-1 flex-col gap-1 text-xs font-medium text-slate-600">
-          Search raw data
-          <input
-            type="search"
-            value={searchTerm}
-            onChange={(event) => setSearchTerm(event.target.value)}
-            placeholder="Search raw data…"
-            className="h-9 rounded-lg border border-slate-300 px-3 text-sm font-normal text-slate-800 outline-none placeholder:text-slate-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
-          Date from
-          <input
-            type="date"
-            value={dateFrom}
-            max={dateTo || undefined}
-            onChange={(event) => setDateFrom(event.target.value)}
-            className="h-9 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
-          Date to
-          <input
-            type="date"
-            value={dateTo}
-            min={dateFrom || undefined}
-            onChange={(event) => setDateTo(event.target.value)}
-            className="h-9 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
-          Municipality
-          <select
-            value={municipalityFilter}
-            onChange={(event) => {
-              setMunicipalityFilter(event.target.value);
-              setBarangayFilter("");
-            }}
-            className="h-9 min-w-44 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
-          >
-            <option value="">All municipalities</option>
-            {municipalityOptions.map(([code, name]) => (
-              <option key={code} value={code}>
-                {name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
-          District
-          <select
-            value={districtFilter}
-            onChange={(event) => {
-              setDistrictFilter(event.target.value);
-              setMunicipalityFilter("");
-              setBarangayFilter("");
-            }}
-            className="h-9 min-w-40 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:bg-slate-100 disabled:text-slate-400"
-          >
-            <option value="">All districts</option>
-            {districtOptions.map((district) => (
-              <option key={district} value={district}>
-                {district}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
-          Barangay
-          <select
-            value={barangayFilter}
-            onChange={(event) => setBarangayFilter(event.target.value)}
-            disabled={!municipalityFilter}
-            className="h-9 min-w-44 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:bg-slate-100 disabled:text-slate-400"
-          >
-            <option value="">All barangays</option>
-            {barangayOptions.map((feature) => (
-              <option
-                key={feature.properties.PSGC_CODE}
-                value={String(feature.properties.PSGC_CODE).trim()}
-              >
-                {feature.properties.NAME}
-              </option>
-            ))}
-          </select>
-        </label>
-        {hasActiveFilters && (
-          <button
-            type="button"
-            onClick={() => {
-              setSearchTerm("");
-              setDateFrom("");
-              setDateTo("");
-              setMunicipalityFilter("");
-              setBarangayFilter("");
-              setDistrictFilter("");
-            }}
-            className="h-9 whitespace-nowrap rounded-lg px-3 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
-          >
-            Clear filters
-          </button>
-        )}
-      </section>
-    )}
-    
-    <DataTabs activeTab="raw" onTabChange={onTabChange} />
     <section
       aria-label="Raw data records"
       className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"
@@ -599,9 +496,11 @@ const hasActiveFilters = Boolean(
         </div>
       ) : (
         <>
-          <div className="border-b border-slate-200 px-4 py-3 text-xs text-slate-500">
-            Showing {filteredRawData.length} of {rawData.length} raw data
-            {rawData.length === 1 ? " record" : " records"}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+            <h2 className="font-semibold text-slate-900">Raw Data Records</h2>
+            <p className="text-xs text-slate-500">
+              Showing {filteredRawData.length} of {rawData.length} records
+            </p>
           </div>
 
           <div className="max-h-[calc(100vh-230px)] min-h-48 overflow-auto">
@@ -689,6 +588,346 @@ const hasActiveFilters = Boolean(
   );
 }
 
+function ProcessedDataTab({
+  searchTerm,
+  dateFrom,
+  dateTo,
+  municipalityFilter,
+  barangayFilter,
+  districtFilter,
+  districtMunicipalityCodes,
+  onNavigateRecord,
+  onRecordsLoaded,
+}) {
+  const [records, setRecords] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [selectedRecord, setSelectedRecord] = useState(null);
+  const detailsDialogRef = useRef(null);
+
+  const reloadRecords = async () => {
+    setLoading(true);
+    setError("");
+
+    try {
+      const response = await api.get("/processed-data/");
+      setRecords(response.data);
+    } catch (requestError) {
+      console.error("Error loading processed data:", requestError);
+      setError("Unable to load processed data. Check your backend connection.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    let isActive = true;
+
+    api
+      .get("/processed-data/")
+      .then((response) => {
+        if (isActive) {
+          setRecords(response.data);
+          onRecordsLoaded(response.data);
+        }
+      })
+      .catch((requestError) => {
+        console.error("Error loading processed data:", requestError);
+        if (isActive) {
+          setError(
+            "Unable to load processed data. Check your backend connection."
+          );
+        }
+      })
+      .finally(() => {
+        if (isActive) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [onRecordsLoaded]);
+
+  useEffect(() => {
+    if (
+      selectedRecord &&
+      detailsDialogRef.current &&
+      !detailsDialogRef.current.open
+    ) {
+      detailsDialogRef.current.showModal();
+    }
+  }, [selectedRecord]);
+
+  const normalizedSearch = searchTerm.trim().toLowerCase();
+  const filteredRecords = [...records]
+    .sort((first, second) => Number(first.id) - Number(second.id))
+    .filter((record) => {
+    const matchesSearch =
+      !normalizedSearch ||
+      [
+        record.id,
+        ...processedDataColumns.map(({ key }) => record[key]),
+        record.uploaded_at,
+      ].some((value) =>
+        String(value ?? "").toLowerCase().includes(normalizedSearch)
+      );
+    const creationDate =
+      typeof record["Creation date"] === "string"
+        ? record["Creation date"].slice(0, 10)
+        : "";
+    const matchesDateFrom = !dateFrom || creationDate >= dateFrom;
+    const matchesDateTo = !dateTo || creationDate <= dateTo;
+    const psgc = String(record.PSCG ?? "").trim();
+    const matchesMunicipality =
+      !municipalityFilter ||
+      psgc.substring(0, 7) + "000" === municipalityFilter;
+    const matchesBarangay = !barangayFilter || psgc === barangayFilter;
+    const matchesDistrict =
+      !districtFilter ||
+      districtMunicipalityCodes
+        .get(districtFilter)
+        ?.has(psgc.substring(0, 7) + "000");
+
+    return (
+      matchesSearch &&
+      matchesDateFrom &&
+      matchesDateTo &&
+      matchesMunicipality &&
+      matchesBarangay &&
+      matchesDistrict
+    );
+    });
+
+  return (
+    <>
+    <section
+      aria-label="Processed data records"
+      className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+        <div>
+          <h2 className="font-semibold text-slate-900">
+            Processed Data Records
+          </h2>
+          {!loading && !error && (
+            <p className="mt-1 text-xs text-slate-500">
+              Showing {filteredRecords.length} of {records.length} records
+            </p>
+          )}
+        </div>
+      </div>
+
+      {loading ? (
+        <div
+          aria-live="polite"
+          className="flex min-h-48 items-center justify-center text-sm text-slate-500"
+        >
+          Loading processed data...
+        </div>
+      ) : error ? (
+        <div
+          role="alert"
+          className="flex min-h-48 flex-col items-center justify-center px-5 text-center"
+        >
+          <p className="text-sm text-slate-600">{error}</p>
+          <button
+            type="button"
+            onClick={reloadRecords}
+            className="mt-3 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
+          >
+            Try again
+          </button>
+        </div>
+      ) : records.length === 0 ? (
+        <div className="flex min-h-48 flex-col items-center justify-center px-5 text-center">
+          <p className="font-medium text-slate-700">No processed data found</p>
+          <p className="mt-1 text-sm text-slate-500">
+            Processed records will appear here.
+          </p>
+        </div>
+      ) : filteredRecords.length === 0 ? (
+        <div className="flex min-h-48 flex-col items-center justify-center px-5 text-center">
+          <p className="font-medium text-slate-700">
+            No matching processed data
+          </p>
+          <p className="mt-1 text-sm text-slate-500">
+            Try adjusting your search or filters.
+          </p>
+        </div>
+      ) : (
+        <div className="max-h-[calc(100vh-230px)] min-h-48 overflow-auto">
+          <table className="w-full min-w-max border-separate border-spacing-0 text-left text-xs text-slate-600">
+            <thead className="sticky top-0 z-10 bg-slate-800 text-[11px] font-semibold uppercase tracking-wide text-slate-100">
+              <tr>
+                <th className="whitespace-nowrap border-b border-slate-700 px-2.5 py-2.5">
+                  ID
+                </th>
+                {processedDataColumns.map((column) => (
+                  <th
+                    key={column.key}
+                    scope="col"
+                    className="whitespace-nowrap border-b border-slate-700 px-2.5 py-2.5"
+                  >
+                    {column.label}
+                  </th>
+                ))}
+                <th className="whitespace-nowrap border-b border-slate-700 px-2.5 py-2.5">
+                  Uploaded At
+                </th>
+                <th className="sticky right-0 whitespace-nowrap border-b border-slate-700 bg-slate-800 px-2.5 py-2.5">
+                  Actions
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {filteredRecords.map((record) => (
+                <tr
+                  key={record.id}
+                  className="odd:bg-white even:bg-slate-50/70 hover:bg-indigo-50/70"
+                >
+                  <td className="whitespace-nowrap border-b border-slate-100 px-2.5 py-2">
+                    {record.id}
+                  </td>
+                  {processedDataColumns.map((column) => {
+                    const value = formatValue(column.key, record[column.key]);
+
+                    return (
+                      <td
+                        key={column.key}
+                        className="max-w-48 border-b border-slate-100 px-2.5 py-2 align-top"
+                      >
+                        <span
+                          className="block max-w-48 truncate"
+                          title={value || undefined}
+                        >
+                          {value || <span className="text-slate-300">—</span>}
+                        </span>
+                      </td>
+                    );
+                  })}
+                  <td className="whitespace-nowrap border-b border-slate-100 px-2.5 py-2">
+                    {formatValue("uploaded_at", record.uploaded_at)}
+                  </td>
+                  <td className="sticky right-0 border-b border-slate-100 bg-inherit px-2 py-1.5">
+                    <div className="flex items-center justify-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedRecord(record)}
+                        aria-label={`More details for processed data record ${record.id}`}
+                        title="View full details"
+                        className="inline-flex size-8 items-center justify-center rounded-md text-slate-600 transition hover:bg-indigo-100 hover:text-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+                      >
+                        <Ellipsis aria-hidden="true" className="size-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onNavigateRecord(record)}
+                        aria-label={`Highlight processed data record ${record.id} on map`}
+                        title="Highlight location on map"
+                        className="inline-flex size-8 items-center justify-center rounded-md text-indigo-700 transition hover:bg-indigo-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+                      >
+                        <MapPin aria-hidden="true" className="size-4" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+    <dialog
+      ref={detailsDialogRef}
+      aria-labelledby="processed-data-details-title"
+      onClose={() => setSelectedRecord(null)}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) {
+          event.currentTarget.close();
+        }
+      }}
+      className="fixed inset-0 m-auto max-h-[90vh] w-[calc(100%-2rem)] max-w-2xl overflow-hidden rounded-xl border-0 bg-transparent p-0 text-slate-800 shadow-2xl backdrop:bg-slate-900/50"
+    >
+      {selectedRecord && (
+        <div className="flex max-h-[90vh] flex-col overflow-hidden rounded-xl bg-white">
+          <header className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold uppercase tracking-wide text-indigo-600">
+                Processed data details
+              </p>
+              <h2
+                id="processed-data-details-title"
+                className="mt-1 truncate text-lg font-semibold text-slate-900"
+              >
+                Record {selectedRecord.id}
+              </h2>
+            </div>
+            <button
+              type="button"
+              autoFocus
+              onClick={() => detailsDialogRef.current?.close()}
+              aria-label="Close processed data details"
+              className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+            >
+              <X aria-hidden="true" className="size-4" />
+            </button>
+          </header>
+          <dl className="grid gap-x-6 overflow-y-auto px-5 py-4 sm:grid-cols-2">
+            <div className="border-b border-slate-100 py-3">
+              <dt className="text-xs font-semibold text-slate-500">ID</dt>
+              <dd className="mt-1 break-words text-sm text-slate-800">
+                {selectedRecord.id}
+              </dd>
+            </div>
+            {processedDataColumns.map((column) => {
+              const value = formatValue(
+                column.key,
+                selectedRecord[column.key]
+              );
+
+              return (
+                <div
+                  key={column.key}
+                  className="border-b border-slate-100 py-3"
+                >
+                  <dt className="text-xs font-semibold text-slate-500">
+                    {column.label}
+                  </dt>
+                  <dd className="mt-1 break-words whitespace-pre-wrap text-sm text-slate-800">
+                    {value || <span className="text-slate-300">—</span>}
+                  </dd>
+                </div>
+              );
+            })}
+            <div className="border-b border-slate-100 py-3">
+              <dt className="text-xs font-semibold text-slate-500">
+                Uploaded At
+              </dt>
+              <dd className="mt-1 break-words text-sm text-slate-800">
+                {formatValue("uploaded_at", selectedRecord.uploaded_at) || (
+                  <span className="text-slate-300">—</span>
+                )}
+              </dd>
+            </div>
+          </dl>
+          <footer className="border-t border-slate-200 px-5 py-3 text-right">
+            <button
+              type="button"
+              onClick={() => detailsDialogRef.current?.close()}
+              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+            >
+              Close
+            </button>
+          </footer>
+        </div>
+      )}
+    </dialog>
+    </>
+  );
+}
+
 function MasterFile() {
   const [activeTab, setActiveTab] = useState("master");
   const [selectedMunicipality, setSelectedMunicipality] = useState(null);
@@ -702,10 +941,31 @@ function MasterFile() {
   const [searchTerm, setSearchTerm] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  const [rawSearchTerm, setRawSearchTerm] = useState("");
+  const [rawDateFrom, setRawDateFrom] = useState("");
+  const [rawDateTo, setRawDateTo] = useState("");
+  const [processedSearchTerm, setProcessedSearchTerm] = useState("");
+  const [processedDateFrom, setProcessedDateFrom] = useState("");
+  const [processedDateTo, setProcessedDateTo] = useState("");
   const [selectedFile, setSelectedFile] = useState(null);
   const detailsDialogRef = useRef(null);
   const [municipalityData, setMunicipalityData] = useState(null);
-const [barangayData, setBarangayData] = useState(null);
+  const [barangayData, setBarangayData] = useState(null);
+  const [rawLocationCounts, setRawLocationCounts] = useState(() =>
+    getLocationCounts([], (record) => record.pscg)
+  );
+  const [processedLocationCounts, setProcessedLocationCounts] = useState(() =>
+    getLocationCounts([], (record) => record.PSCG)
+  );
+
+  const handleRawRecordsLoaded = useCallback((records) => {
+    setRawLocationCounts(getLocationCounts(records, (record) => record.pscg));
+  }, []);
+  const handleProcessedRecordsLoaded = useCallback((records) => {
+    setProcessedLocationCounts(
+      getLocationCounts(records, (record) => record.PSCG)
+    );
+  }, []);
 
   const retryMasterFiles = async () => {
     setLoading(true);
@@ -806,6 +1066,24 @@ const [barangayData, setBarangayData] = useState(null);
         .filter(Boolean)
     ),
   ].sort((first, second) => first.localeCompare(second));
+  const rawBarangayOptions = (barangayData?.features ?? [])
+    .filter((feature) => {
+      const matchesMunicipality =
+        !municipalityFilter ||
+        String(feature.properties?.PSGC_CODE ?? "")
+          .trim()
+          .substring(0, 7) === municipalityFilter.substring(0, 7);
+      const matchesDistrict =
+        !districtFilter ||
+        String(feature.properties?.DISTRICT ?? "").trim() === districtFilter;
+
+      return matchesMunicipality && matchesDistrict;
+    })
+    .sort((first, second) =>
+      String(first.properties?.NAME ?? "").localeCompare(
+        String(second.properties?.NAME ?? "")
+      )
+    );
   const filteredMasterFiles = masterFiles.filter((file) => {
     const matchesSearch =
       !normalizedSearch ||
@@ -849,7 +1127,41 @@ const [barangayData, setBarangayData] = useState(null);
       barangayFilter ||
       districtFilter
   );
-
+  const hasActiveRawFilters = Boolean(
+    rawSearchTerm.trim() ||
+      rawDateFrom ||
+      rawDateTo ||
+      municipalityFilter ||
+      barangayFilter ||
+      districtFilter
+  );
+  const hasActiveProcessedFilters = Boolean(
+    processedSearchTerm.trim() ||
+      processedDateFrom ||
+      processedDateTo ||
+      municipalityFilter ||
+      barangayFilter ||
+      districtFilter
+  );
+  const masterLocationCounts = useMemo(
+    () =>
+      getLocationCounts(
+        masterFiles,
+        (file) => String(file.file_name ?? "").substring(0, 10)
+      ),
+    [masterFiles]
+  );
+  const activeLocationCounts =
+    activeTab === "master"
+      ? masterLocationCounts
+      : activeTab === "raw"
+        ? rawLocationCounts
+        : processedLocationCounts;
+  const municipalityCountsKey = JSON.stringify(
+    [...activeLocationCounts.municipalityCounts].sort(([first], [second]) =>
+      first.localeCompare(second)
+    )
+  );
 useEffect(() => {
   Promise.all([
     fetch("/data/municipality.geojson").then((response) => response.json()),
@@ -866,6 +1178,18 @@ useEffect(() => {
 
   function handleHighlightRawRecord(record) {
     const pscg = String(record.pscg ?? "").trim();
+    const municipality = getMunicipalityFromPSGC(pscg);
+    const barangay = barangayData?.features.find(
+      (feature) =>
+        String(feature.properties?.PSGC_CODE ?? "").trim() === pscg
+    );
+
+    setSelectedMunicipality(municipality);
+    setSelectedBarangay(barangay || null);
+  }
+
+  function handleHighlightProcessedRecord(record) {
+    const pscg = String(record.PSCG ?? "").trim();
     const municipality = getMunicipalityFromPSGC(pscg);
     const barangay = barangayData?.features.find(
       (feature) =>
@@ -927,11 +1251,6 @@ useEffect(() => {
               Browse and review registered file metadata.
             </p>
           </div>
-          {activeTab === "master" && !loading && !hasError && (
-            <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 shadow-sm">
-              {filteredMasterFiles.length} of {masterFiles.length} files
-            </span>
-          )}
         </header>
 
         <section
@@ -943,27 +1262,77 @@ useEffect(() => {
               Click a barangay to filter the table, or Shift-click a map area to
               filter by its municipality.
             </p>
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedMunicipality(null);
-                setSelectedBarangay(null);
-                setMunicipalityFilter("");
-                setBarangayFilter("");
-                setDistrictFilter("");
-              }}
-              disabled={!selectedMunicipality && !selectedBarangay}
-              className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <X aria-hidden="true" className="size-3.5" />
-              Clear highlight
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              {activeTab === "master" && !loading && !hasError && (
+                <label className="sr-only" htmlFor="master-file-search">
+                  Search files
+                </label>
+              )}
+              {activeTab === "master" && !loading && !hasError && (
+                <input
+                  id="master-file-search"
+                  type="search"
+                  value={searchTerm}
+                  onChange={(event) => setSearchTerm(event.target.value)}
+                  placeholder="Search file metadata…"
+                  className="h-8 w-52 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 outline-none placeholder:text-slate-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 sm:w-64"
+                />
+              )}
+              {activeTab === "raw" && (
+                <>
+                  <label className="sr-only" htmlFor="raw-data-search">
+                    Search raw data
+                  </label>
+                  <input
+                    id="raw-data-search"
+                    type="search"
+                    value={rawSearchTerm}
+                    onChange={(event) => setRawSearchTerm(event.target.value)}
+                    placeholder="Search raw data…"
+                    className="h-8 w-52 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 outline-none placeholder:text-slate-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 sm:w-64"
+                  />
+                </>
+              )}
+              {activeTab === "processed" && (
+                <>
+                  <label className="sr-only" htmlFor="processed-data-search">
+                    Search processed data
+                  </label>
+                  <input
+                    id="processed-data-search"
+                    type="search"
+                    value={processedSearchTerm}
+                    onChange={(event) =>
+                      setProcessedSearchTerm(event.target.value)
+                    }
+                    placeholder="Search processed data…"
+                    className="h-8 w-52 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-800 outline-none placeholder:text-slate-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 sm:w-64"
+                  />
+                </>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedMunicipality(null);
+                  setSelectedBarangay(null);
+                  setMunicipalityFilter("");
+                  setBarangayFilter("");
+                  setDistrictFilter("");
+                }}
+                disabled={!selectedMunicipality && !selectedBarangay}
+                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <X aria-hidden="true" className="size-3.5" />
+                Clear highlight
+              </button>
+            </div>
           </div>
-          <MapContainer
-            center={[10.63, 122.96]}
-            zoom={12}
-            className="h-[500px] w-full"
-          >
+          <div className="relative">
+            <MapContainer
+              center={[10.63, 122.96]}
+              zoom={12}
+              className="h-[500px] w-full"
+            >
             <TileLayer
               attribution="&copy; OpenStreetMap contributors"
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -971,7 +1340,7 @@ useEffect(() => {
             {municipalityData && (
               <Pane name="municipality-features" style={{ zIndex: 410 }}>
                 <GeoJSON
-                  key={selectedMunicipality || "none"}
+                  key={`${activeTab}-${selectedMunicipality || "none"}-${municipalityCountsKey}`}
                   data={municipalityData}
                   style={(feature) => {
                     const isSelected =
@@ -988,20 +1357,34 @@ useEffect(() => {
                   }}
                   onEachFeature={(feature, layer) => {
                     const municipalityName = feature.properties?.LGU;
-                    const isSelected =
-                      normalizeMunicipalityName(municipalityName) ===
-                      normalizeMunicipalityName(selectedMunicipality);
 
                     layer.on("click", () =>
                       handleMapMunicipalityClick(feature)
                     );
 
-                    if (municipalityName && selectedMunicipality && isSelected) {
-                      layer.bindTooltip(municipalityName, {
+                    if (municipalityName) {
+                      const isSelected =
+                        normalizeMunicipalityName(municipalityName) ===
+                        normalizeMunicipalityName(selectedMunicipality);
+                      const municipalityCode =
+                        getMunicipalityCodeFromName(municipalityName);
+                      const count =
+                        activeLocationCounts.municipalityCounts.get(
+                          municipalityCode
+                        ) ?? 0;
+
+                      layer.bindTooltip(
+                        isSelected
+                          ? `${municipalityName}: ${count}`
+                          : String(count),
+                        {
                         permanent: true,
                         direction: "center",
-                        className: "map-feature-label",
-                      });
+                        className: isSelected
+                          ? "map-feature-counter map-municipality-selected"
+                          : "map-feature-counter",
+                        }
+                      );
                     }
                   }}
                 />
@@ -1036,7 +1419,7 @@ useEffect(() => {
                 {selectedBarangay && (
                   <Pane name="selected-barangay" style={{ zIndex: 430 }}>
                     <GeoJSON
-                      key={`selected-${selectedBarangay.properties.PSGC_CODE}`}
+                      key={`${activeTab}-selected-${selectedBarangay.properties.PSGC_CODE}-${activeLocationCounts.barangayCounts.get(String(selectedBarangay.properties.PSGC_CODE).trim()) ?? 0}`}
                       data={selectedBarangay}
                       style={{
                         color: "#e9ff25",
@@ -1060,10 +1443,18 @@ useEffect(() => {
                         });
 
                         if (barangayName) {
-                          layer.bindTooltip(barangayName, {
+                          const barangayCode = String(
+                            feature.properties?.PSGC_CODE ?? ""
+                          ).trim();
+                          const count =
+                            activeLocationCounts.barangayCounts.get(
+                              barangayCode
+                            ) ?? 0;
+
+                          layer.bindTooltip(`${barangayName}: ${count}`, {
                             permanent: true,
                             direction: "center",
-                            className: "barangay-feature-label",
+                            className: "map-feature-counter",
                           });
                         }
                       }}
@@ -1072,122 +1463,335 @@ useEffect(() => {
                 )}
               </>
             )}
-          </MapContainer>
+            </MapContainer>
+            {activeTab === "master" && !loading && !hasError && (
+              <aside
+                aria-label="Filter master files"
+                className="absolute left-3 top-3 z-[1000] max-h-[calc(500px-1.5rem)] w-72 max-w-[calc(100%-1.5rem)] overflow-y-auto rounded-xl border border-slate-200 bg-white/95 p-4 shadow-xl backdrop-blur-sm"
+              >
+                <div className="mb-3 flex items-center justify-between">
+                  <h2 className="text-sm font-semibold text-slate-800">
+                    Filters
+                  </h2>
+                  {hasActiveFilters && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearchTerm("");
+                        setDateFrom("");
+                        setDateTo("");
+                        setMunicipalityFilter("");
+                        setBarangayFilter("");
+                        setDistrictFilter("");
+                      }}
+                      className="text-xs font-semibold text-indigo-700 transition hover:text-indigo-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+                    >
+                      Clear filters
+                    </button>
+                  )}
+                </div>
+                <div className="flex flex-col gap-3">
+                  <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                    Date from
+                    <input
+                      type="date"
+                      value={dateFrom}
+                      max={dateTo || undefined}
+                      onChange={(event) => setDateFrom(event.target.value)}
+                      className="h-9 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                    Date to
+                    <input
+                      type="date"
+                      value={dateTo}
+                      min={dateFrom || undefined}
+                      onChange={(event) => setDateTo(event.target.value)}
+                      className="h-9 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                    Municipality
+                    <select
+                      value={municipalityFilter}
+                      onChange={(event) => {
+                        setMunicipalityFilter(event.target.value);
+                        setBarangayFilter("");
+                      }}
+                      className="h-9 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                    >
+                      <option value="">All municipalities</option>
+                      {municipalityOptions.map(([code, name]) => (
+                        <option key={code} value={code}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                    District
+                    <select
+                      value={districtFilter}
+                      onChange={(event) => {
+                        setDistrictFilter(event.target.value);
+                        setMunicipalityFilter("");
+                        setBarangayFilter("");
+                      }}
+                      className="h-9 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:bg-slate-100 disabled:text-slate-400"
+                    >
+                      <option value="">All districts</option>
+                      {districtOptions.map((district) => (
+                        <option key={district} value={district}>
+                          {district}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                    Barangay
+                    <select
+                      value={barangayFilter}
+                      onChange={(event) => setBarangayFilter(event.target.value)}
+                      disabled={!municipalityFilter}
+                      className="h-9 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:bg-slate-100 disabled:text-slate-400"
+                    >
+                      <option value="">All barangays</option>
+                      {barangayOptions.map((feature) => (
+                        <option
+                          key={feature.properties.PSGC_CODE}
+                          value={String(feature.properties.PSGC_CODE).trim()}
+                        >
+                          {feature.properties.NAME}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </aside>
+            )}
+            {activeTab === "raw" && (
+              <aside
+                aria-label="Filter raw data"
+                className="absolute left-3 top-3 z-[1000] max-h-[calc(500px-1.5rem)] w-72 max-w-[calc(100%-1.5rem)] overflow-y-auto rounded-xl border border-slate-200 bg-white/95 p-4 shadow-xl backdrop-blur-sm"
+              >
+                <div className="mb-3 flex items-center justify-between">
+                  <h2 className="text-sm font-semibold text-slate-800">
+                    Filters
+                  </h2>
+                  {hasActiveRawFilters && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRawSearchTerm("");
+                        setRawDateFrom("");
+                        setRawDateTo("");
+                        setMunicipalityFilter("");
+                        setBarangayFilter("");
+                        setDistrictFilter("");
+                      }}
+                      className="text-xs font-semibold text-indigo-700 transition hover:text-indigo-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+                    >
+                      Clear filters
+                    </button>
+                  )}
+                </div>
+                <div className="flex flex-col gap-3">
+                  <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                    Date from
+                    <input
+                      type="date"
+                      value={rawDateFrom}
+                      max={rawDateTo || undefined}
+                      onChange={(event) => setRawDateFrom(event.target.value)}
+                      className="h-9 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                    Date to
+                    <input
+                      type="date"
+                      value={rawDateTo}
+                      min={rawDateFrom || undefined}
+                      onChange={(event) => setRawDateTo(event.target.value)}
+                      className="h-9 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                    Municipality
+                    <select
+                      value={municipalityFilter}
+                      onChange={(event) => {
+                        setMunicipalityFilter(event.target.value);
+                        setBarangayFilter("");
+                      }}
+                      className="h-9 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                    >
+                      <option value="">All municipalities</option>
+                      {municipalityOptions.map(([code, name]) => (
+                        <option key={code} value={code}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                    District
+                    <select
+                      value={districtFilter}
+                      onChange={(event) => {
+                        setDistrictFilter(event.target.value);
+                        setMunicipalityFilter("");
+                        setBarangayFilter("");
+                      }}
+                      className="h-9 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:bg-slate-100 disabled:text-slate-400"
+                    >
+                      <option value="">All districts</option>
+                      {districtOptions.map((district) => (
+                        <option key={district} value={district}>
+                          {district}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                    Barangay
+                    <select
+                      value={barangayFilter}
+                      onChange={(event) => setBarangayFilter(event.target.value)}
+                      disabled={!municipalityFilter}
+                      className="h-9 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:bg-slate-100 disabled:text-slate-400"
+                    >
+                      <option value="">All barangays</option>
+                      {rawBarangayOptions.map((feature) => (
+                        <option
+                          key={feature.properties.PSGC_CODE}
+                          value={String(feature.properties.PSGC_CODE).trim()}
+                        >
+                          {feature.properties.NAME}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </aside>
+            )}
+            {activeTab === "processed" && (
+              <aside
+                aria-label="Filter processed data"
+                className="absolute left-3 top-3 z-[1000] max-h-[calc(500px-1.5rem)] w-72 max-w-[calc(100%-1.5rem)] overflow-y-auto rounded-xl border border-slate-200 bg-white/95 p-4 shadow-xl backdrop-blur-sm"
+              >
+                <div className="mb-3 flex items-center justify-between">
+                  <h2 className="text-sm font-semibold text-slate-800">
+                    Filters
+                  </h2>
+                  {hasActiveProcessedFilters && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProcessedSearchTerm("");
+                        setProcessedDateFrom("");
+                        setProcessedDateTo("");
+                        setMunicipalityFilter("");
+                        setBarangayFilter("");
+                        setDistrictFilter("");
+                      }}
+                      className="text-xs font-semibold text-indigo-700 transition hover:text-indigo-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+                    >
+                      Clear filters
+                    </button>
+                  )}
+                </div>
+                <div className="flex flex-col gap-3">
+                  <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                    Date from
+                    <input
+                      type="date"
+                      value={processedDateFrom}
+                      max={processedDateTo || undefined}
+                      onChange={(event) =>
+                        setProcessedDateFrom(event.target.value)
+                      }
+                      className="h-9 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                    Date to
+                    <input
+                      type="date"
+                      value={processedDateTo}
+                      min={processedDateFrom || undefined}
+                      onChange={(event) =>
+                        setProcessedDateTo(event.target.value)
+                      }
+                      className="h-9 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                    Municipality
+                    <select
+                      value={municipalityFilter}
+                      onChange={(event) => {
+                        setMunicipalityFilter(event.target.value);
+                        setBarangayFilter("");
+                      }}
+                      className="h-9 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                    >
+                      <option value="">All municipalities</option>
+                      {municipalityOptions.map(([code, name]) => (
+                        <option key={code} value={code}>
+                          {name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                    District
+                    <select
+                      value={districtFilter}
+                      onChange={(event) => {
+                        setDistrictFilter(event.target.value);
+                        setMunicipalityFilter("");
+                        setBarangayFilter("");
+                      }}
+                      className="h-9 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+                    >
+                      <option value="">All districts</option>
+                      {districtOptions.map((district) => (
+                        <option key={district} value={district}>
+                          {district}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
+                    Barangay
+                    <select
+                      value={barangayFilter}
+                      onChange={(event) => setBarangayFilter(event.target.value)}
+                      disabled={!municipalityFilter}
+                      className="h-9 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:bg-slate-100 disabled:text-slate-400"
+                    >
+                      <option value="">All barangays</option>
+                      {rawBarangayOptions.map((feature) => (
+                        <option
+                          key={feature.properties.PSGC_CODE}
+                          value={String(feature.properties.PSGC_CODE).trim()}
+                        >
+                          {feature.properties.NAME}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </aside>
+            )}
+          </div>
         </section>
 
+        <DataTabs activeTab={activeTab} onTabChange={setActiveTab} />
         <div hidden={activeTab !== "master"}>
           <>
-        {!loading && !hasError && (
-          <section
-            aria-label="Filter master files"
-            className="mb-4 flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm sm:flex-row sm:items-end"
-          >
-            <label className="flex min-w-56 flex-1 flex-col gap-1 text-xs font-medium text-slate-600">
-              Search files
-              <input
-                type="search"
-                value={searchTerm}
-                onChange={(event) => setSearchTerm(event.target.value)}
-                placeholder="Search file metadata…"
-                className="h-9 rounded-lg border border-slate-300 px-3 text-sm font-normal text-slate-800 outline-none placeholder:text-slate-400 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
-              Date from
-              <input
-                type="date"
-                value={dateFrom}
-                max={dateTo || undefined}
-                onChange={(event) => setDateFrom(event.target.value)}
-                className="h-9 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
-              Date to
-              <input
-                type="date"
-                value={dateTo}
-                min={dateFrom || undefined}
-                onChange={(event) => setDateTo(event.target.value)}
-                className="h-9 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
-              Municipality
-              <select
-                value={municipalityFilter}
-                onChange={(event) => {
-                  setMunicipalityFilter(event.target.value);
-                  setBarangayFilter("");
-                }}
-                className="h-9 min-w-44 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
-              >
-                <option value="">All municipalities</option>
-                {municipalityOptions.map(([code, name]) => (
-                  <option key={code} value={code}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
-              District
-              <select
-                value={districtFilter}
-                onChange={(event) => {
-                  setDistrictFilter(event.target.value);
-                  setMunicipalityFilter("");
-                  setBarangayFilter("");
-                }}
-                className="h-9 min-w-40 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:bg-slate-100 disabled:text-slate-400"
-              >
-                <option value="">All districts</option>
-                {districtOptions.map((district) => (
-                  <option key={district} value={district}>
-                    {district}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex flex-col gap-1 text-xs font-medium text-slate-600">
-              Barangay
-              <select
-                value={barangayFilter}
-                onChange={(event) => setBarangayFilter(event.target.value)}
-                disabled={!municipalityFilter}
-                className="h-9 min-w-44 rounded-lg border border-slate-300 px-2.5 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:bg-slate-100 disabled:text-slate-400"
-              >
-                <option value="">All barangays</option>
-                {barangayOptions.map((feature) => (
-                  <option
-                    key={feature.properties.PSGC_CODE}
-                    value={String(feature.properties.PSGC_CODE).trim()}
-                  >
-                    {feature.properties.NAME}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {hasActiveFilters && (
-              <button
-                type="button"
-                onClick={() => {
-                  setSearchTerm("");
-                  setDateFrom("");
-                  setDateTo("");
-                  setMunicipalityFilter("");
-                  setBarangayFilter("");
-                  setDistrictFilter("");
-                }}
-                className="h-9 whitespace-nowrap rounded-lg px-3 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
-              >
-                Clear filters
-              </button>
-            )}
-          </section>
-        )}
-
-        <DataTabs activeTab="master" onTabChange={setActiveTab} />
         <section
           aria-label="Master file records"
           className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"
@@ -1235,112 +1839,137 @@ useEffect(() => {
               </p>
             </div>
           ) : (
-            <div className="max-h-[calc(100vh-230px)] min-h-48 overflow-auto">
-              <table className="w-full min-w-max border-separate border-spacing-0 text-left text-xs text-slate-600">
-                <thead className="sticky top-0 z-10 bg-slate-800 text-[11px] font-semibold uppercase tracking-wide text-slate-100">
-                  <tr>
-                    {columns.map((column) => (
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+                <h2 className="font-semibold text-slate-900">
+                  Master File Records
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Showing {filteredMasterFiles.length} of {masterFiles.length}{" "}
+                  records
+                </p>
+              </div>
+              <div className="max-h-[calc(100vh-230px)] min-h-48 overflow-auto">
+                <table className="w-full min-w-max border-separate border-spacing-0 text-left text-xs text-slate-600">
+                  <thead className="sticky top-0 z-10 bg-slate-800 text-[11px] font-semibold uppercase tracking-wide text-slate-100">
+                    <tr>
+                      {columns.map((column) => (
+                        <th
+                          key={column.key}
+                          scope="col"
+                          className="whitespace-nowrap border-b border-slate-700 px-2.5 py-2.5"
+                        >
+                          {column.label}
+                        </th>
+                      ))}
                       <th
-                        key={column.key}
                         scope="col"
-                        className="whitespace-nowrap border-b border-slate-700 px-2.5 py-2.5"
+                        className="sticky right-0 whitespace-nowrap border-b border-slate-700 bg-slate-800 px-2.5 py-2.5"
                       >
-                        {column.label}
+                        Actions
                       </th>
-                    ))}
-                    <th
-                      scope="col"
-                      className="sticky right-0 whitespace-nowrap border-b border-slate-700 bg-slate-800 px-2.5 py-2.5"
-                    >
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {filteredMasterFiles.map((file) => (
-                    <tr
-                      key={file.file_id}
-                      className="odd:bg-white even:bg-slate-50/70 hover:bg-indigo-50/70"
-                    >
-                      {columns.map((column) => {
-                        const rawValue =
-                          column.key === "extent" && file.extent
-                            ? JSON.stringify(file.extent)
-                            : file[column.key];
-                        const value = formatValue(column.key, rawValue);
-
-                        return (
-                          <td
-                            key={column.key}
-                            className="max-w-48 border-b border-slate-100 px-2.5 py-2 align-top"
-                          >
-                            <span
-                              className="block max-w-48 truncate"
-                              title={value == null ? undefined : String(value)}
-                            >
-                              {!value ? (
-                                <span className="text-slate-300">—</span>
-                              ) : (
-                                value
-                              )}
-                            </span>
-                          </td>
-                        );
-                      })}
-                      <td className="sticky right-0 border-b border-slate-100 bg-inherit px-2 py-1.5">
-                        <div className="flex items-center justify-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => setSelectedFile(file)}
-                            aria-label={`More details for ${file.file_name || `file ${file.file_id}`}`}
-                            title="View full details"
-                            className="inline-flex size-8 items-center justify-center rounded-md text-slate-600 transition hover:bg-indigo-100 hover:text-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
-                          >
-                            <Ellipsis aria-hidden="true" className="size-4" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const fileName = file.file_name || "";
-                              const municipality =
-                                getMunicipalityFromFilename(fileName);
-                              const psgc = fileName.substring(0, 10);
-                              const barangay = barangayData?.features.find(
-                                (feature) =>
-                                  String(feature.properties.PSGC_CODE) === psgc
-                              );
-
-                              setSelectedMunicipality(municipality);
-                              setSelectedBarangay(barangay);
-                            }}
-                            aria-label={`Highlight ${file.file_name || `file ${file.file_id}`} on map`}
-                            title="Highlight location on map"
-                            className="inline-flex size-8 items-center justify-center rounded-md text-indigo-700 transition hover:bg-indigo-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
-                          >
-                            <MapPin aria-hidden="true" className="size-4" />
-                          </button>
-                        </div>
-                      </td>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filteredMasterFiles.map((file) => (
+                      <tr
+                        key={file.file_id}
+                        className="odd:bg-white even:bg-slate-50/70 hover:bg-indigo-50/70"
+                      >
+                        {columns.map((column) => {
+                          const rawValue =
+                            column.key === "extent" && file.extent
+                              ? JSON.stringify(file.extent)
+                              : file[column.key];
+                          const value = formatValue(column.key, rawValue);
+
+                          return (
+                            <td
+                              key={column.key}
+                              className="max-w-48 border-b border-slate-100 px-2.5 py-2 align-top"
+                            >
+                              <span
+                                className="block max-w-48 truncate"
+                                title={value == null ? undefined : String(value)}
+                              >
+                                {!value ? (
+                                  <span className="text-slate-300">—</span>
+                                ) : (
+                                  value
+                                )}
+                              </span>
+                            </td>
+                          );
+                        })}
+                        <td className="sticky right-0 border-b border-slate-100 bg-inherit px-2 py-1.5">
+                          <div className="flex items-center justify-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedFile(file)}
+                              aria-label={`More details for ${file.file_name || `file ${file.file_id}`}`}
+                              title="View full details"
+                              className="inline-flex size-8 items-center justify-center rounded-md text-slate-600 transition hover:bg-indigo-100 hover:text-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+                            >
+                              <Ellipsis aria-hidden="true" className="size-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const fileName = file.file_name || "";
+                                const municipality =
+                                  getMunicipalityFromFilename(fileName);
+                                const psgc = fileName.substring(0, 10);
+                                const barangay = barangayData?.features.find(
+                                  (feature) =>
+                                    String(feature.properties.PSGC_CODE) === psgc
+                                );
+
+                                setSelectedMunicipality(municipality);
+                                setSelectedBarangay(barangay);
+                              }}
+                              aria-label={`Highlight ${file.file_name || `file ${file.file_id}`} on map`}
+                              title="Highlight location on map"
+                              className="inline-flex size-8 items-center justify-center rounded-md text-indigo-700 transition hover:bg-indigo-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+                            >
+                              <MapPin aria-hidden="true" className="size-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </section>
           </>
         </div>
         <div hidden={activeTab !== "raw"}>
           <RawDataTab
-            onTabChange={setActiveTab}
             onHighlightRecord={handleHighlightRawRecord}
+            onRecordsLoaded={handleRawRecordsLoaded}
             barangayData={barangayData}
+            searchTerm={rawSearchTerm}
+            setSearchTerm={setRawSearchTerm}
+            dateFrom={rawDateFrom}
+            dateTo={rawDateTo}
             municipalityFilter={municipalityFilter}
-            setMunicipalityFilter={setMunicipalityFilter}
             barangayFilter={barangayFilter}
-            setBarangayFilter={setBarangayFilter}
             districtFilter={districtFilter}
-            setDistrictFilter={setDistrictFilter}
+          />
+        </div>
+        <div hidden={activeTab !== "processed"}>
+          <ProcessedDataTab
+            searchTerm={processedSearchTerm}
+            dateFrom={processedDateFrom}
+            dateTo={processedDateTo}
+            municipalityFilter={municipalityFilter}
+            barangayFilter={barangayFilter}
+            districtFilter={districtFilter}
+            districtMunicipalityCodes={districtMunicipalityCodes}
+            onNavigateRecord={handleHighlightProcessedRecord}
+            onRecordsLoaded={handleProcessedRecordsLoaded}
           />
         </div>
       </div>

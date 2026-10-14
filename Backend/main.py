@@ -10,6 +10,9 @@ from routers.locations import router as locations_router
 from fastapi.staticfiles import StaticFiles
 from routers import auth, users, admin, locations, masterfile
 from routers import raw_data
+from routers.processed_data import router as processed_data_router
+
+
 
 
 app = FastAPI()
@@ -24,6 +27,8 @@ app.include_router(users_router)
 app.include_router(locations_router)
 app.include_router(masterfile.router)
 app.include_router(raw_data.router)
+app.include_router(processed_data_router)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
