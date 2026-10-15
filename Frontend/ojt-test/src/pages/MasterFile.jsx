@@ -1380,9 +1380,7 @@ useEffect(() => {
                         {
                         permanent: true,
                         direction: "center",
-                        className: isSelected
-                          ? "map-feature-counter map-municipality-selected"
-                          : "map-feature-counter",
+                        className: "map-feature-counter",
                         }
                       );
                     }

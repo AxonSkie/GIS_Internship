@@ -105,3 +105,29 @@ def get_current_admin(
 
     return current_user
 
+
+
+def get_current_editor(
+    current_user: dict = Depends(get_current_user)
+):
+    if current_user["role"] != "editor":
+        raise HTTPException(
+            status_code=403,
+            detail="Editor access required"
+        )
+
+    return current_user
+
+
+def get_current_editor_or_admin(
+    current_user: dict = Depends(get_current_user)
+):
+    if current_user["role"] not in ["editor", "admin"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Editor or admin access required"
+        )
+
+    return current_user
+
+

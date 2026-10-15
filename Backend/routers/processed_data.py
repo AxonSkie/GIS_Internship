@@ -7,6 +7,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from database import get_db
+from auth import get_current_admin
+from auth import get_current_editor_or_admin
 
 router = APIRouter(
     prefix="/processed-data",
@@ -74,6 +76,8 @@ def parse_file_size(value):
 def upload_processed_data(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    current_admin: dict = Depends(get_current_admin),
+
 ):
     if not file.filename or not file.filename.lower().endswith(".xlsx"):
         raise HTTPException(
@@ -206,3 +210,86 @@ def get_processed_data(db: Session = Depends(get_db)):
     """))
 
     return [dict(row._mapping) for row in result]
+
+
+
+@router.put("/{record_id}")
+def update_record(
+    record_id: int,
+    data: dict,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_editor_or_admin),
+):
+    allowed_columns = {
+        "Main Folder",
+        "Folder Name",
+        "Full path",
+        "PSCG",
+        "File Size",
+        "UAV Mission ID",
+        "Creation date",
+        "Data source",
+        "Description",
+        "Data Privacy",
+    }
+
+    if not data:
+        raise HTTPException(
+            status_code=400,
+            detail="No fields provided to update.",
+        )
+
+    invalid_columns = set(data.keys()) - allowed_columns
+
+    if invalid_columns:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid fields: {', '.join(invalid_columns)}",
+        )
+
+    try:
+        existing = db.execute(
+            text("SELECT id FROM processed_data WHERE id = :id"),
+            {"id": record_id},
+        ).first()
+
+        if existing is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Processed Data record not found.",
+            )
+
+        updates = []
+        params = {"record_id": record_id}
+
+        for index, (column, value) in enumerate(data.items()):
+            parameter = f"value_{index}"
+            updates.append(f'"{column}" = :{parameter}')
+            params[parameter] = value
+
+        query = text(
+            f"""
+            UPDATE processed_data
+            SET {", ".join(updates)}
+            WHERE id = :record_id
+            """
+        )
+
+        db.execute(query, params)
+        db.commit()
+
+        return {
+            "message": "Processed Data record updated successfully.",
+            "record_id": record_id,
+        }
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update record: {exc}",
+        )
+

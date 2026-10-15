@@ -628,3 +628,125 @@
     padding: 20px;
   }
 }
+
+
+.admin-uploads {
+  margin-bottom: 28px;
+}
+
+.admin-uploads-heading {
+  margin-bottom: 18px;
+}
+
+.admin-uploads-heading h2 {
+  margin: 4px 0;
+  font-size: 1.35rem;
+  font-weight: 700;
+}
+
+.admin-uploads-heading p:not(.admin-eyebrow) {
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 0.9rem;
+}
+
+.admin-upload-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.admin-upload-card {
+  padding: 22px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.admin-upload-card h3 {
+  margin: 0 0 8px;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.admin-upload-card p {
+  margin: 0 0 16px;
+  color: #64748b;
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+
+.admin-upload-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
+.admin-upload-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.admin-upload-select,
+.admin-upload-submit {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid #cbd5cf;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 650;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.admin-upload-select {
+  background: #fff;
+  color: #34443a;
+}
+
+.admin-upload-select:hover:not(:disabled) {
+  border-color: #8ba391;
+  background: #f7faf7;
+}
+
+.admin-upload-submit {
+  border-color: #243f34;
+  background: #243f34;
+  color: #fff;
+}
+
+.admin-upload-submit:hover:not(:disabled) {
+  border-color: #365a46;
+  background: #365a46;
+}
+
+.admin-upload-select:focus-visible,
+.admin-upload-submit:focus-visible {
+  outline: 3px solid #a8c4ad;
+  outline-offset: 2px;
+}
+
+.admin-upload-select:disabled,
+.admin-upload-submit:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.admin-upload-filename {
+  margin: 12px 0 0 !important;
+  color: #4b6352 !important;
+  font-size: 0.8rem !important;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+  .admin-upload-grid {
+    grid-template-columns: 1fr;
+  }
+}

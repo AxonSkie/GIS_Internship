@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import api from "../services/api";
 import "./admin.css";
 
@@ -9,6 +9,12 @@ function Admin() {
   const [editingUser, setEditingUser] = useState(null);
   const [saving, setSaving] = useState(false);
   const [deletingUserId, setDeletingUserId] = useState(null);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [uploading, setUploading] = useState({});
+  const [selectedUploads, setSelectedUploads] = useState({});
+  const masterFileInputRef = useRef(null);
+  const processedFileInputRef = useRef(null);
+  const rawFileInputRef = useRef(null);
 
   useEffect(() => {
     getUsers();
@@ -25,23 +31,109 @@ function Admin() {
     }
 
     try {
-      await api.get("/users/me", {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
-    } catch (error) {
+      const response = await api.get("/users/me", {
+  headers: {
+    Authorization: `Bearer ${token}`,
+  },
+});
+
+setCurrentUser(response.data);
+    } catch {
       localStorage.removeItem("access_token");
       window.location.replace("/login");
     }
   };
 
+  handlePageShow();
   window.addEventListener("pageshow", handlePageShow);
 
   return () => {
     window.removeEventListener("pageshow", handlePageShow);
   };
 }, []);
+
+
+  async function uploadExcel(type, file) {
+    if (!file) {
+      return;
+    }
+
+    if (!file.name.toLowerCase().endsWith(".xlsx")) {
+      alert("Please select an .xlsx Excel file.");
+      return;
+    }
+
+    const uploadEndpoints = {
+      masterfile: "/masterfile/upload",
+      processed: "/processed-data/upload",
+      raw: "/raw-data/import",
+    };
+
+    const endpoint = uploadEndpoints[type];
+
+    if (!endpoint) {
+      alert("Invalid upload type.");
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    setUploading((previous) => ({
+      ...previous,
+      [type]: true,
+    }));
+
+    try {
+      const token = localStorage.getItem("access_token");
+
+      if (!token) {
+        window.location.replace("/login");
+        return;
+      }
+
+      const response = await api.post(endpoint, formData, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      alert(response.data.message || "Excel file uploaded successfully.");
+      setSelectedUploads((previous) => ({
+        ...previous,
+        [type]: null,
+      }));
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      const hasInvalidProcessedStructure =
+        type === "processed" &&
+        Array.isArray(detail?.missing_columns) &&
+        detail.missing_columns.length > 0;
+
+      alert(
+        hasInvalidProcessedStructure
+          ? "This file has invalid structure format"
+          : typeof detail === "string"
+            ? detail
+            : "Upload failed. Please try again."
+      );
+    } finally {
+      setUploading((previous) => ({
+        ...previous,
+        [type]: false,
+      }));
+    }
+  }
+
+  function selectExcelFile(type, event) {
+    const file = event.target.files?.[0] || null;
+    setSelectedUploads((previous) => ({
+      ...previous,
+      [type]: file,
+    }));
+    event.target.value = "";
+  }
+
   async function getUsers() {
     setLoading(true);
     try {
@@ -240,6 +332,138 @@ function Admin() {
             <span className="admin-secure-label"><span aria-hidden="true">●</span> Private workspace</span>
           </footer>
         </section>
+        {currentUser?.role === "admin" && (
+          <section className="admin-uploads" aria-labelledby="upload-title">
+            <div className="admin-uploads-heading">
+              <div>
+                <p className="admin-eyebrow">DATA MANAGEMENT</p>
+                <h2 id="upload-title">Upload Excel files</h2>
+                <p>Import Excel records into the existing database.</p>
+              </div>
+            </div>
+
+            <div className="admin-upload-grid">
+              <article className="admin-upload-card">
+                <h3>Master File</h3>
+                <p>Upload your Master File Excel spreadsheet.</p>
+                <input
+                  ref={masterFileInputRef}
+                  className="admin-upload-input"
+                  type="file"
+                  accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  disabled={!!uploading.masterfile}
+                  onChange={(event) => selectExcelFile("masterfile", event)}
+                  aria-label="Choose Master File Excel spreadsheet"
+                />
+                <div className="admin-upload-actions">
+                  <button
+                    className="admin-upload-select"
+                    type="button"
+                    onClick={() => masterFileInputRef.current?.click()}
+                    disabled={!!uploading.masterfile}
+                  >
+                    Choose Excel file
+                  </button>
+                  <button
+                    className="admin-upload-submit"
+                    type="button"
+                    onClick={() =>
+                      uploadExcel("masterfile", selectedUploads.masterfile)
+                    }
+                    disabled={
+                      !selectedUploads.masterfile || !!uploading.masterfile
+                    }
+                  >
+                    {uploading.masterfile ? "Uploading..." : "Upload file"}
+                  </button>
+                </div>
+                <p className="admin-upload-filename" aria-live="polite">
+                  {selectedUploads.masterfile
+                    ? selectedUploads.masterfile.name
+                    : "No file selected"}
+                </p>
+              </article>
+
+              <article className="admin-upload-card">
+                <h3>Processed Data</h3>
+                <p>Upload your Processed Data Excel spreadsheet.</p>
+                <input
+                  ref={processedFileInputRef}
+                  className="admin-upload-input"
+                  type="file"
+                  accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  disabled={!!uploading.processed}
+                  onChange={(event) => selectExcelFile("processed", event)}
+                  aria-label="Choose Processed Data Excel spreadsheet"
+                />
+                <div className="admin-upload-actions">
+                  <button
+                    className="admin-upload-select"
+                    type="button"
+                    onClick={() => processedFileInputRef.current?.click()}
+                    disabled={!!uploading.processed}
+                  >
+                    Choose Excel file
+                  </button>
+                  <button
+                    className="admin-upload-submit"
+                    type="button"
+                    onClick={() =>
+                      uploadExcel("processed", selectedUploads.processed)
+                    }
+                    disabled={
+                      !selectedUploads.processed || !!uploading.processed
+                    }
+                  >
+                    {uploading.processed ? "Uploading..." : "Upload file"}
+                  </button>
+                </div>
+                <p className="admin-upload-filename" aria-live="polite">
+                  {selectedUploads.processed
+                    ? selectedUploads.processed.name
+                    : "No file selected"}
+                </p>
+              </article>
+
+              <article className="admin-upload-card">
+                <h3>Raw Data</h3>
+                <p>Upload your Raw Data Excel spreadsheet.</p>
+                <input
+                  ref={rawFileInputRef}
+                  className="admin-upload-input"
+                  type="file"
+                  accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  disabled={!!uploading.raw}
+                  onChange={(event) => selectExcelFile("raw", event)}
+                  aria-label="Choose Raw Data Excel spreadsheet"
+                />
+                <div className="admin-upload-actions">
+                  <button
+                    className="admin-upload-select"
+                    type="button"
+                    onClick={() => rawFileInputRef.current?.click()}
+                    disabled={!!uploading.raw}
+                  >
+                    Choose Excel file
+                  </button>
+                  <button
+                    className="admin-upload-submit"
+                    type="button"
+                    onClick={() => uploadExcel("raw", selectedUploads.raw)}
+                    disabled={!selectedUploads.raw || !!uploading.raw}
+                  >
+                    {uploading.raw ? "Uploading..." : "Upload file"}
+                  </button>
+                </div>
+                <p className="admin-upload-filename" aria-live="polite">
+                  {selectedUploads.raw
+                    ? selectedUploads.raw.name
+                    : "No file selected"}
+                </p>
+              </article>
+            </div>
+          </section>
+        )}
         <footer className="admin-page-footer">WORKSPACE ADMINISTRATION <span>•</span> USER ACCESS</footer>
       </div>
       {editingUser && (
@@ -273,6 +497,7 @@ function Admin() {
               </div>
             </form>
           </section>
+
         </div>
       )}
     </main>

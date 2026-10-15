@@ -7,6 +7,8 @@ import pandas as pd
 
 from database import get_db
 from models import RawData
+from auth import get_current_admin
+from auth import get_current_editor_or_admin
 
 router = APIRouter(
     prefix="/raw-data",
@@ -30,7 +32,9 @@ def get_raw_data(db: Session = Depends(get_db)):
 @router.post("/import")
 async def import_raw_data(
     file: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_admin: dict = Depends(get_current_admin),
+
 ):
     # Check the file extension
     if not file.filename or not file.filename.lower().endswith(".xlsx"):
@@ -118,3 +122,89 @@ async def import_raw_data(
             status_code=400,
             detail=f"Excel import failed: {str(error)}"
         )
+
+
+
+@router.put("/{record_id}")
+def update_raw_data(
+    record_id: int,
+    data: dict,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_editor_or_admin),
+):
+    allowed_fields = {
+        "main_folder",
+        "folder_name",
+        "full_path",
+        "pscg",
+        "model_unit",
+        "gsd",
+        "uav_mission_id",
+        "file_size",
+        "creation_date",
+        "data_source",
+        "description",
+        "data_privacy",
+    }
+
+    if not data:
+        raise HTTPException(
+            status_code=400,
+            detail="No fields provided to update.",
+        )
+
+    invalid_fields = set(data.keys()) - allowed_fields
+
+    if invalid_fields:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid fields: {', '.join(sorted(invalid_fields))}",
+        )
+
+    try:
+        record = db.query(RawData).filter(
+            RawData.raw_data_id == record_id
+        ).first()
+
+        if record is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Raw Data record not found.",
+            )
+
+        for field, value in data.items():
+            if field == "creation_date" and value is not None:
+                try:
+                    value = pd.to_datetime(
+                        value,
+                        errors="raise",
+                    ).date()
+                except (ValueError, TypeError):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="creation_date must be a valid date.",
+                    )
+
+            setattr(record, field, value)
+
+        db.commit()
+        db.refresh(record)
+
+        return {
+            "message": "Raw Data record updated successfully.",
+            "raw_data_id": record.raw_data_id,
+            "updated_fields": list(data.keys()),
+        }
+
+    except HTTPException:
+        db.rollback()
+        raise
+
+    except Exception as exc:
+        db.rollback()
+        print("Raw Data update error:", repr(exc))
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to update Raw Data record.",
+        )
+

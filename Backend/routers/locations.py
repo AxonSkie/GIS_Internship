@@ -66,3 +66,4 @@ def get_locations(db: Session = Depends(get_db)):
     locations = db.query(Location).all()
 
     return locations
+
