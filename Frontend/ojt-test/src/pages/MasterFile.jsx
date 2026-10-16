@@ -1,17 +1,47 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import api from "../services/api";
-import { Ellipsis, MapPin, X } from "lucide-react";
+import L from "leaflet";
+import {
+  Ellipsis,
+  MapPin,
+  X,
+  Image as ImageIcon,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react";
 
 
 
 import {
   MapContainer,
+  Marker,
   Pane,
   TileLayer,
   GeoJSON,
+  Popup,
+  useMap,
 } from "react-leaflet";
 
 import "leaflet/dist/leaflet.css";
+
+const gpsMarkerIcon = L.divIcon({
+  className: "",
+  html: `
+    <svg xmlns="http://www.w3.org/2000/svg" width="36" height="44" viewBox="0 0 36 44" aria-hidden="true">
+      <path d="M18 1C8.6 1 1 8.6 1 18c0 12.2 17 25 17 25s17-12.8 17-25C35 8.6 27.4 1 18 1Z" fill="#dc2626" stroke="#fff" stroke-width="2"/>
+      <circle cx="18" cy="18" r="6" fill="#fff"/>
+    </svg>
+  `,
+  iconSize: [36, 44],
+  iconAnchor: [18, 44],
+});
 
 
 
@@ -36,6 +66,7 @@ const columns = [
   { key: "keywords", label: "Keywords" },
   { key: "data_privacy", label: "Data Privacy" },
   { key: "data_sharing_agreement_with", label: "Data Sharing Agreement With" },
+  
 ];
 
 
@@ -80,6 +111,30 @@ function formatValue(key, value) {
   }
 
   return typeof value === "object" ? JSON.stringify(value) : String(value);
+}
+
+function getFolderFileUrl(path) {
+  const normalizedPath = path.replace(/\\/g, "/");
+  const isUncPath = normalizedPath.startsWith("//");
+  const segments = normalizedPath.split("/").filter(Boolean);
+
+  if (
+    !isUncPath &&
+    !normalizedPath.startsWith("/") &&
+    !/^[A-Za-z]:/.test(normalizedPath)
+  ) {
+    return null;
+  }
+
+  const encodedSegments = segments.map((segment, index) =>
+    index === 0 && /^[A-Za-z]:$/.test(segment)
+      ? segment
+      : encodeURIComponent(segment)
+  );
+
+  return isUncPath
+    ? `file://${encodedSegments.join("/")}`
+    : `file:///${encodedSegments.join("/")}`;
 }
 
 const municipalityPSGC = {
@@ -127,6 +182,14 @@ function normalizeMunicipalityName(name) {
     .replace(/ City$/, "")
     .trim()
     .toLowerCase();
+}
+
+function normalizePSGCCode(pscg) {
+  const code = String(pscg ?? "").trim().replace(/\.0+$/, "");
+
+  return /^\d+$/.test(code) && code.length < 10
+    ? code.padStart(10, "0")
+    : code;
 }
 
 function getMunicipalityFromFilename(fileName) {
@@ -205,6 +268,9 @@ function getLocationCounts(records, getPSGC) {
   return { municipalityCounts, barangayCounts };
 }
 
+
+
+
 function DataTabs({ activeTab, onTabChange }) {
   return (
     <nav
@@ -250,6 +316,180 @@ function DataTabs({ activeTab, onTabChange }) {
   );
 }
 
+function GpsLocationLayer({ locations }) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (locations.length === 1) {
+      map.setView(
+        [locations[0].latitude, locations[0].longitude],
+        18,
+        { animate: true }
+      );
+    } else if (locations.length > 1) {
+      map.fitBounds(
+        locations.map(({ latitude, longitude }) => [latitude, longitude]),
+        { padding: [40, 40], maxZoom: 17, animate: true }
+      );
+    }
+  }, [locations, map]);
+
+  return locations.map((location, index) => (
+    <GpsLocationMarker
+      key={`${location.dataType || "processed"}-${location.recordId}-${location.filename || "gps-location"}-${index}`}
+      location={location}
+    />
+  ));
+}
+
+function GpsLocationMarker({ location }) {
+  const [thumbnailUrl, setThumbnailUrl] = useState("");
+  const [thumbnailLoading, setThumbnailLoading] = useState(false);
+
+  useEffect(() => {
+    if (!location.filename) {
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    let objectUrl;
+    let isActive = true;
+
+    async function loadThumbnail() {
+      setThumbnailLoading(true);
+
+      try {
+        const token = localStorage.getItem("access_token");
+        const response = await api.get(
+          `/${location.dataType === "raw" ? "raw-data" : "processed-data"}/${location.recordId}/preview?filename=${encodeURIComponent(location.filename)}`,
+          {
+            responseType: "blob",
+            signal: controller.signal,
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+          }
+        );
+
+        if (isActive) {
+          objectUrl = URL.createObjectURL(response.data);
+          setThumbnailUrl(objectUrl);
+        }
+      } catch (error) {
+        if (isActive && error.name !== "CanceledError") {
+          console.error("Unable to load GPS marker thumbnail:", error);
+        }
+      } finally {
+        if (isActive) {
+          setThumbnailLoading(false);
+        }
+      }
+    }
+
+    loadThumbnail();
+
+    return () => {
+      isActive = false;
+      controller.abort();
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [location.dataType, location.filename, location.recordId]);
+
+  const imageMarkerIcon = useMemo(() => {
+    if (location.dataType === "raw" || !thumbnailUrl) {
+      return gpsMarkerIcon;
+    }
+
+    return L.divIcon({
+      className: "",
+      html: `
+        <div style="position:relative;width:88px;height:84px;">
+          <img
+            src="${thumbnailUrl}"
+            alt=""
+            style="display:block;width:88px;height:72px;object-fit:cover;border:2px solid white;border-radius:4px;box-shadow:0 1px 5px rgba(15,23,42,.5);"
+          />
+          <div style="position:absolute;left:37px;top:70px;width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;border-top:12px solid white;filter:drop-shadow(0 2px 1px rgba(15,23,42,.4));"></div>
+        </div>
+      `,
+      iconSize: [88, 84],
+      iconAnchor: [44, 84],
+    });
+  }, [location.dataType, thumbnailUrl]);
+
+  return (
+    <>
+      <Marker
+        position={[location.latitude, location.longitude]}
+        icon={imageMarkerIcon}
+        title={
+          thumbnailLoading
+            ? "Loading image overlay"
+            : location.filename || "GPS location"
+        }
+      >
+        <Popup maxWidth={340} minWidth={260}>
+          <div className="max-h-80 space-y-2 overflow-y-auto p-1">
+            <h2 className="text-sm font-semibold text-slate-900">
+              {location.filename || "GPS location"}
+            </h2>
+            {thumbnailUrl ? (
+              <img
+                src={thumbnailUrl}
+                alt={location.filename || "Data image"}
+                className="max-h-48 w-full rounded border border-slate-200 object-contain"
+              />
+            ) : (
+              <p className="text-xs text-slate-500">
+                {thumbnailLoading
+                  ? "Loading image…"
+                  : "Image preview is unavailable."}
+              </p>
+            )}
+            <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 text-xs">
+              <dt className="font-semibold text-slate-600">Latitude</dt>
+              <dd className="break-all text-slate-800">
+                {location.latitude.toFixed(6)}
+              </dd>
+              <dt className="font-semibold text-slate-600">Longitude</dt>
+              <dd className="break-all text-slate-800">
+                {location.longitude.toFixed(6)}
+              </dd>
+              {location.record &&
+                (location.dataType === "raw"
+                  ? rawDataColumns
+                  : processedDataColumns
+                ).map((column) => {
+                  const value = formatValue(
+                    column.key,
+                    location.record[column.key]
+                  );
+
+                  return value ? (
+                    <Fragment key={column.key}>
+                      <dt className="font-semibold text-slate-600">
+                        {column.label}
+                      </dt>
+                      <dd className="break-all text-slate-800">{value}</dd>
+                    </Fragment>
+                  ) : null;
+                })}
+              {location.record?.uploaded_at && (
+                <>
+                  <dt className="font-semibold text-slate-600">Uploaded At</dt>
+                  <dd className="break-all text-slate-800">
+                    {formatValue("uploaded_at", location.record.uploaded_at)}
+                  </dd>
+                </>
+              )}
+            </dl>
+          </div>
+        </Popup>
+      </Marker>
+    </>
+  );
+}
+
 function RawDataTab({
   onHighlightRecord,
   onRecordsLoaded,
@@ -267,6 +507,175 @@ function RawDataTab({
   const [retryCount, setRetryCount] = useState(0);
   const [selectedRecord, setSelectedRecord] = useState(null);
   const detailsDialogRef = useRef(null);
+  const [imageViewerRecord, setImageViewerRecord] = useState(null);
+  const imageViewerDialogRef = useRef(null);
+  const [previewImages, setPreviewImages] = useState([]);
+  const [activeImageIndex, setActiveImageIndex] = useState(0);
+  const [activeImageUrl, setActiveImageUrl] = useState("");
+  const [imageLoading, setImageLoading] = useState(false);
+  const [imageError, setImageError] = useState("");
+  const [imageFolderPath, setImageFolderPath] = useState("");
+  const [folderOpenError, setFolderOpenError] = useState("");
+
+  const openFolderInExplorer = async (record) => {
+    setFolderOpenError("");
+
+    try {
+      await api.post(
+        `/raw-data/${record.raw_data_id}/open-folder`,
+        {},
+        getPreviewRequestConfig()
+      );
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      setFolderOpenError(
+        (typeof detail === "string" ? detail : detail?.message) ||
+          "Unable to open the folder in File Explorer."
+      );
+    }
+  };
+
+  const handleOpenFolder = async () => {
+    setFolderOpenError("");
+
+    try {
+      const result = await window.desktopAPI?.openFolder(imageFolderPath);
+      if (!result?.success) {
+        setFolderOpenError(
+          result?.error || "Open this record in the installed desktop app."
+        );
+      }
+    } catch (error) {
+      setFolderOpenError(error.message || "Unable to open the folder.");
+    }
+  };
+
+  const getPreviewRequestConfig = (options = {}) => {
+    const token = localStorage.getItem("access_token");
+
+    return {
+      ...options,
+      headers: {
+        ...options.headers,
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    };
+  };
+
+  const openImageViewer = async (record) => {
+    setImageViewerRecord(record);
+    setPreviewImages([]);
+    setActiveImageIndex(0);
+    setActiveImageUrl("");
+    setImageError("");
+    setImageFolderPath("");
+    setImageLoading(true);
+
+    try {
+      const response = await api.get(
+        `/raw-data/${record.raw_data_id}/preview`,
+        getPreviewRequestConfig({ responseType: "blob" })
+      );
+      const contentType = response.headers["content-type"] || response.data.type;
+
+      if (contentType?.startsWith("image/")) {
+        const filename = String(record.full_path ?? "")
+          .split(/[\\/]/)
+          .pop();
+        setPreviewImages([{ filename }]);
+        return;
+      }
+
+      const data = JSON.parse(await response.data.text());
+      if (!data.images?.length) {
+        setImageError("No JPG, JPEG, or PNG images were found.");
+        return;
+      }
+
+      setPreviewImages(data.images);
+    } catch (error) {
+      let detail = error.response?.data?.detail;
+      if (error.response?.data instanceof Blob) {
+        try {
+          const errorData = JSON.parse(await error.response.data.text());
+          detail = errorData.detail;
+        } catch {
+          detail = null;
+        }
+      }
+
+      if (detail && typeof detail === "object" && detail.folder_path) {
+        setImageFolderPath(detail.folder_path);
+      }
+
+      setImageError(
+        (typeof detail === "string" ? detail : detail?.message) ||
+          "Unable to load images from this folder."
+      );
+    } finally {
+      setImageLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (
+      imageViewerRecord &&
+      imageViewerDialogRef.current &&
+      !imageViewerDialogRef.current.open
+    ) {
+      imageViewerDialogRef.current.showModal();
+    }
+  }, [imageViewerRecord]);
+
+  useEffect(() => {
+    const image = previewImages[activeImageIndex];
+    if (!imageViewerRecord || !image) {
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    let objectUrl;
+    let isActive = true;
+
+    async function loadImage() {
+      setImageLoading(true);
+      setImageError("");
+      setActiveImageUrl("");
+
+      try {
+        const response = await api.get(
+          `/raw-data/${imageViewerRecord.raw_data_id}/preview?filename=${encodeURIComponent(image.filename)}`,
+          getPreviewRequestConfig({
+            responseType: "blob",
+            signal: controller.signal,
+          })
+        );
+
+        if (isActive) {
+          objectUrl = URL.createObjectURL(response.data);
+          setActiveImageUrl(objectUrl);
+        }
+      } catch (error) {
+        if (isActive && error.name !== "CanceledError") {
+          setImageError("Unable to display this image.");
+        }
+      } finally {
+        if (isActive) {
+          setImageLoading(false);
+        }
+      }
+    }
+
+    loadImage();
+
+    return () => {
+      isActive = false;
+      controller.abort();
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [activeImageIndex, imageViewerRecord, previewImages]);
 
   useEffect(() => {
     let isActive = true;
@@ -439,6 +848,151 @@ const filteredRawData = rawData.filter((record) => {
   )}
 </dialog>
 
+<dialog
+  ref={imageViewerDialogRef}
+  aria-labelledby="raw-data-image-title"
+  onClose={() => {
+    setImageViewerRecord(null);
+    setPreviewImages([]);
+    setActiveImageUrl("");
+    setImageFolderPath("");
+  }}
+  onClick={(event) => {
+    if (event.target === event.currentTarget) {
+      event.currentTarget.close();
+    }
+  }}
+  className="fixed inset-0 m-auto max-h-[90vh] w-[calc(100%-2rem)] max-w-5xl overflow-hidden rounded-xl border-0 bg-transparent p-0 text-slate-800 shadow-2xl backdrop:bg-slate-900/70"
+>
+  {imageViewerRecord && (
+    <div className="flex max-h-[90vh] flex-col overflow-hidden rounded-xl bg-white">
+      <header className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold uppercase tracking-wide text-indigo-600">
+            Raw data image preview
+          </p>
+          <h2
+            id="raw-data-image-title"
+            className="mt-1 truncate text-lg font-semibold text-slate-900"
+            title={imageViewerRecord.full_path}
+          >
+            {previewImages[activeImageIndex]?.filename ||
+              imageViewerRecord.full_path}
+          </h2>
+          {previewImages.length > 1 && (
+            <p className="mt-1 text-xs text-slate-500">
+              Image {activeImageIndex + 1} of {previewImages.length}
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          autoFocus
+          onClick={() => imageViewerDialogRef.current?.close()}
+          aria-label="Close image preview"
+          className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+        >
+          <X aria-hidden="true" className="size-4" />
+        </button>
+      </header>
+
+      <div className="flex min-h-64 flex-1 items-center justify-center overflow-auto bg-slate-950 p-4">
+        {imageLoading ? (
+          <div
+            aria-live="polite"
+            className="flex items-center gap-3 text-sm text-white"
+          >
+            <span
+              aria-hidden="true"
+              className="size-4 animate-spin rounded-full border-2 border-slate-500 border-t-white"
+            />
+            Loading image…
+          </div>
+        ) : imageError ? (
+          <div className="max-w-2xl space-y-3 text-center">
+            <p role="alert" className="text-sm text-white">
+              {imageError}
+            </p>
+            {imageFolderPath && (
+              <div className="space-y-3 rounded-lg bg-slate-800 p-4 text-left">
+                <p className="text-xs font-semibold text-slate-200">
+                  Folder location
+                </p>
+                <code className="block break-all text-sm text-white">
+                  {imageFolderPath}
+                </code>
+                {window.desktopAPI?.openFolder ? (
+                  <button
+                    type="button"
+                    onClick={handleOpenFolder}
+                    className="inline-flex rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                  >
+                    Open in File Explorer
+                  </button>
+                ) : (
+                  getFolderFileUrl(imageFolderPath) && (
+                  <a
+                    href={getFolderFileUrl(imageFolderPath)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                  >
+                    Try opening folder
+                  </a>
+                  )
+                )}
+                {folderOpenError && (
+                  <p role="alert" className="text-xs text-red-300">
+                    {folderOpenError}
+                  </p>
+                )}
+                {!window.desktopAPI?.openFolder && (
+                  <p className="text-xs text-slate-300">
+                    Your browser may block links to folders on the server.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        ) : activeImageUrl ? (
+          <img
+            src={activeImageUrl}
+            alt={previewImages[activeImageIndex]?.filename || "Raw data preview"}
+            className="max-h-[calc(90vh-10rem)] max-w-full object-contain"
+          />
+        ) : (
+          <ImageIcon aria-hidden="true" className="size-10 text-slate-500" />
+        )}
+      </div>
+
+      {previewImages.length > 1 && (
+        <footer className="flex items-center justify-between border-t border-slate-200 px-5 py-3">
+          <button
+            type="button"
+            onClick={() => setActiveImageIndex((index) => index - 1)}
+            disabled={activeImageIndex === 0 || imageLoading}
+            className="inline-flex items-center gap-1 rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <ChevronLeft aria-hidden="true" className="size-4" />
+            Previous
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveImageIndex((index) => index + 1)}
+            disabled={
+              activeImageIndex === previewImages.length - 1 || imageLoading
+            }
+            className="inline-flex items-center gap-1 rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Next
+            <ChevronRight aria-hidden="true" className="size-4" />
+          </button>
+        </footer>
+      )}
+    </div>
+  )}
+</dialog>
+
     <section
       aria-label="Raw data records"
       className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"
@@ -529,7 +1083,16 @@ const filteredRawData = rawData.filter((record) => {
                 {filteredRawData.map((record) => (
                   <tr
                     key={record.raw_data_id}
-                    className="odd:bg-white even:bg-slate-50/70 hover:bg-indigo-50/70"
+                    onClick={() => openImageViewer(record)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openImageViewer(record);
+                      }
+                    }}
+                    tabIndex={0}
+                    aria-label={`Show image preview for raw data record ${record.raw_data_id}`}
+                    className="cursor-pointer odd:bg-white even:bg-slate-50/70 hover:bg-indigo-50/70 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-indigo-600"
                   >
                     {rawDataColumns.map((column) => {
                       const value = formatValue(
@@ -542,14 +1105,41 @@ const filteredRawData = rawData.filter((record) => {
                           key={column.key}
                           className="max-w-64 border-b border-slate-100 px-2.5 py-2 align-top"
                         >
-                          <span
-                            className="block max-w-64 truncate"
-                            title={value || undefined}
-                          >
-                            {value || (
-                              <span className="text-slate-300">—</span>
-                            )}
-                          </span>
+                          {column.key === "raw_data_id" ? (
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                onHighlightRecord(record);
+                              }}
+                              aria-label={`Locate raw data record ${record.raw_data_id} on map`}
+                              title="Locate and highlight on map"
+                              className="font-semibold text-indigo-700 underline decoration-dotted underline-offset-2 hover:text-indigo-900 focus-visible:outline-2 focus-visible:outline-indigo-600"
+                            >
+                              {value}
+                            </button>
+                          ) : column.key === "full_path" && value ? (
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openFolderInExplorer(record);
+                              }}
+                              title={`Open folder: ${value}`}
+                              className="block max-w-64 truncate text-indigo-600 underline decoration-dotted underline-offset-2 hover:text-indigo-800 focus-visible:outline-2 focus-visible:outline-indigo-600"
+                            >
+                              {value}
+                            </button>
+                          ) : (
+                            <span
+                              className="block max-w-64 truncate"
+                              title={value || undefined}
+                            >
+                              {value || (
+                                <span className="text-slate-300">—</span>
+                              )}
+                            </span>
+                          )}
                         </td>
                       );
                     })}
@@ -557,7 +1147,10 @@ const filteredRawData = rawData.filter((record) => {
                       <div className="flex items-center justify-center gap-1">
                         <button
                           type="button"
-                          onClick={() => setSelectedRecord(record)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setSelectedRecord(record);
+                          }}
                           aria-label={`More details for raw data record ${record.raw_data_id}`}
                           title="View full details"
                           className="inline-flex size-8 items-center justify-center rounded-md text-slate-600 transition hover:bg-indigo-100 hover:text-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
@@ -566,7 +1159,10 @@ const filteredRawData = rawData.filter((record) => {
                         </button>
                         <button
                           type="button"
-                          onClick={() => onHighlightRecord(record)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onHighlightRecord(record);
+                          }}
                           aria-label={`Highlight raw data record ${record.raw_data_id} on map`}
                           title="Highlight location on map"
                           className="inline-flex size-8 items-center justify-center rounded-md text-indigo-700 transition hover:bg-indigo-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
@@ -580,6 +1176,11 @@ const filteredRawData = rawData.filter((record) => {
               </tbody>
             </table>
           </div>
+          {folderOpenError && (
+            <p role="alert" className="border-t border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
+              {folderOpenError}
+            </p>
+          )}
         </>
       )}
     </section>
@@ -603,7 +1204,122 @@ function ProcessedDataTab({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [selectedRecord, setSelectedRecord] = useState(null);
+  const [folderOpenError, setFolderOpenError] = useState("");
   const detailsDialogRef = useRef(null);
+  const [imageViewerRecord, setImageViewerRecord] = useState(null);
+  const imageViewerDialogRef = useRef(null);
+  const [previewImages, setPreviewImages] = useState([]);
+  const [activeImageIndex, setActiveImageIndex] = useState(0);
+  const [activeImageUrl, setActiveImageUrl] = useState("");
+  const [imageLoading, setImageLoading] = useState(false);
+  const [imageError, setImageError] = useState("");
+  const [imageFolderPath, setImageFolderPath] = useState("");
+
+  const openFolderInExplorer = async (record) => {
+    setFolderOpenError("");
+
+    try {
+      const token = localStorage.getItem("access_token");
+      await api.post(
+        `/processed-data/${record.id}/open-folder`,
+        {},
+        {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        }
+      );
+    } catch (requestError) {
+      const detail = requestError.response?.data?.detail;
+      setFolderOpenError(
+        (typeof detail === "string" ? detail : detail?.message) ||
+          "Unable to open the folder in File Explorer."
+      );
+    }
+  };
+
+  const openImageViewer = async (record) => {
+    setImageViewerRecord(record);
+    setPreviewImages([]);
+    setActiveImageIndex(0);
+    setActiveImageUrl("");
+    setImageError("");
+    setImageFolderPath("");
+    setFolderOpenError("");
+    setImageLoading(true);
+
+    try {
+      const token = localStorage.getItem("access_token");
+      const response = await api.get(
+        `/processed-data/${record.id}/preview`,
+        {
+          responseType: "blob",
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        }
+      );
+      const contentType = response.headers["content-type"] || response.data.type;
+
+      if (contentType?.startsWith("image/")) {
+        const filename = String(record["Full path"] ?? "")
+          .split(/[\\/]/)
+          .pop();
+        setPreviewImages([{ filename }]);
+        return;
+      }
+
+      const data = JSON.parse(await response.data.text());
+      if (!data.images?.length) {
+        setImageError("No JPG, JPEG, or PNG images were found.");
+        setImageFolderPath(data.folder_path || record["Full path"] || "");
+        return;
+      }
+
+      setPreviewImages(data.images);
+    } catch (requestError) {
+      let detail = requestError.response?.data?.detail;
+      if (requestError.response?.data instanceof Blob) {
+        try {
+          const responseData = JSON.parse(
+            await requestError.response.data.text()
+          );
+          detail = responseData.detail;
+        } catch {
+          detail = null;
+        }
+      }
+
+      if (detail && typeof detail === "object" && detail.folder_path) {
+        setImageFolderPath(detail.folder_path);
+      } else if (
+        requestError.response?.status === 404 ||
+        requestError.response?.status === 415
+      ) {
+        setImageFolderPath(record["Full path"] || "");
+      }
+
+      setImageError(
+        (typeof detail === "string" ? detail : detail?.message) ||
+          "Unable to load images from this folder."
+      );
+    } finally {
+      setImageLoading(false);
+    }
+  };
+
+  const handleOpenImageFolder = async () => {
+    setFolderOpenError("");
+
+    try {
+      const result = await window.desktopAPI?.openFolder(imageFolderPath);
+      if (!result?.success) {
+        setFolderOpenError(
+          result?.error || "Open this record in the installed desktop app."
+        );
+      }
+    } catch (requestError) {
+      setFolderOpenError(
+        requestError.message || "Unable to open the folder."
+      );
+    }
+  };
 
   const reloadRecords = async () => {
     setLoading(true);
@@ -660,6 +1376,68 @@ function ProcessedDataTab({
     }
   }, [selectedRecord]);
 
+  useEffect(() => {
+    if (
+      imageViewerRecord &&
+      imageViewerDialogRef.current &&
+      !imageViewerDialogRef.current.open
+    ) {
+      imageViewerDialogRef.current.showModal();
+    }
+  }, [imageViewerRecord]);
+
+  useEffect(() => {
+    const image = previewImages[activeImageIndex];
+    if (!imageViewerRecord || !image) {
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    let objectUrl;
+    let isActive = true;
+
+    async function loadImage() {
+      setImageLoading(true);
+      setImageError("");
+      setActiveImageUrl("");
+
+      try {
+        const token = localStorage.getItem("access_token");
+        const response = await api.get(
+          `/processed-data/${imageViewerRecord.id}/preview?filename=${encodeURIComponent(image.filename)}`,
+          {
+            responseType: "blob",
+            signal: controller.signal,
+            headers: token ? { Authorization: `Bearer ${token}` } : {},
+          }
+        );
+
+        if (isActive) {
+          objectUrl = URL.createObjectURL(response.data);
+          setActiveImageUrl(objectUrl);
+        }
+      } catch (requestError) {
+        if (isActive && requestError.name !== "CanceledError") {
+          setImageError("Unable to display this image.");
+        }
+      } finally {
+        if (isActive) {
+          setImageLoading(false);
+        }
+      }
+    }
+
+    loadImage();
+
+    return () => {
+      isActive = false;
+      controller.abort();
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [activeImageIndex, imageViewerRecord, previewImages]);
+
   const normalizedSearch = searchTerm.trim().toLowerCase();
   const filteredRecords = [...records]
     .sort((first, second) => Number(first.id) - Number(second.id))
@@ -702,6 +1480,157 @@ function ProcessedDataTab({
 
   return (
     <>
+    <dialog
+      ref={imageViewerDialogRef}
+      aria-labelledby="processed-data-image-title"
+      onClose={() => {
+        setImageViewerRecord(null);
+        setPreviewImages([]);
+        setActiveImageUrl("");
+        setImageFolderPath("");
+        setFolderOpenError("");
+      }}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) {
+          event.currentTarget.close();
+        }
+      }}
+      className="fixed inset-0 m-auto max-h-[90vh] w-[calc(100%-2rem)] max-w-5xl overflow-hidden rounded-xl border-0 bg-transparent p-0 text-slate-800 shadow-2xl backdrop:bg-slate-900/70"
+    >
+      {imageViewerRecord && (
+        <div className="flex max-h-[90vh] flex-col overflow-hidden rounded-xl bg-white">
+          <header className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold uppercase tracking-wide text-indigo-600">
+                Processed data image preview
+              </p>
+              <h2
+                id="processed-data-image-title"
+                className="mt-1 truncate text-lg font-semibold text-slate-900"
+                title={imageViewerRecord["Full path"]}
+              >
+                {previewImages[activeImageIndex]?.filename ||
+                  imageViewerRecord["Full path"]}
+              </h2>
+              {previewImages.length > 1 && (
+                <p className="mt-1 text-xs text-slate-500">
+                  Image {activeImageIndex + 1} of {previewImages.length}
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              autoFocus
+              onClick={() => imageViewerDialogRef.current?.close()}
+              aria-label="Close image preview"
+              className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+            >
+              <X aria-hidden="true" className="size-4" />
+            </button>
+          </header>
+
+          <div className="flex min-h-64 flex-1 items-center justify-center overflow-auto bg-slate-950 p-4">
+            {imageLoading ? (
+              <div
+                aria-live="polite"
+                className="flex items-center gap-3 text-sm text-white"
+              >
+                <span
+                  aria-hidden="true"
+                  className="size-4 animate-spin rounded-full border-2 border-slate-500 border-t-white"
+                />
+                Loading image…
+              </div>
+            ) : imageError ? (
+              <div className="max-w-2xl space-y-3 text-center">
+                <p role="alert" className="text-sm text-white">
+                  {imageError}
+                </p>
+                {imageFolderPath && (
+                  <div className="space-y-3 rounded-lg bg-slate-800 p-4 text-left">
+                    <p className="text-xs font-semibold text-slate-200">
+                      Folder location
+                    </p>
+                    <code className="block break-all text-sm text-white">
+                      {imageFolderPath}
+                    </code>
+                    {window.desktopAPI?.openFolder ? (
+                      <button
+                        type="button"
+                        onClick={handleOpenImageFolder}
+                        className="inline-flex rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                      >
+                        Open in File Explorer
+                      </button>
+                    ) : (
+                      getFolderFileUrl(imageFolderPath) && (
+                        <a
+                          href={getFolderFileUrl(imageFolderPath)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                        >
+                          Try opening folder
+                        </a>
+                      )
+                    )}
+                    {folderOpenError && (
+                      <p role="alert" className="text-xs text-red-300">
+                        {folderOpenError}
+                      </p>
+                    )}
+                    {!window.desktopAPI?.openFolder && (
+                      <p className="text-xs text-slate-300">
+                        Your browser may block links to folders on the server.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : activeImageUrl ? (
+              <img
+                src={activeImageUrl}
+                alt={
+                  previewImages[activeImageIndex]?.filename ||
+                  "Processed data preview"
+                }
+                className="max-h-[calc(90vh-10rem)] max-w-full object-contain"
+              />
+            ) : (
+              <ImageIcon
+                aria-hidden="true"
+                className="size-10 text-slate-500"
+              />
+            )}
+          </div>
+
+          {previewImages.length > 1 && (
+            <footer className="flex items-center justify-between border-t border-slate-200 px-5 py-3">
+              <button
+                type="button"
+                onClick={() => setActiveImageIndex((index) => index - 1)}
+                disabled={activeImageIndex === 0 || imageLoading}
+                className="inline-flex items-center gap-1 rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ChevronLeft aria-hidden="true" className="size-4" />
+                Previous
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveImageIndex((index) => index + 1)}
+                disabled={
+                  activeImageIndex === previewImages.length - 1 || imageLoading
+                }
+                className="inline-flex items-center gap-1 rounded-lg px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Next
+                <ChevronRight aria-hidden="true" className="size-4" />
+              </button>
+            </footer>
+          )}
+        </div>
+      )}
+    </dialog>
     <section
       aria-label="Processed data records"
       className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"
@@ -785,7 +1714,16 @@ function ProcessedDataTab({
               {filteredRecords.map((record) => (
                 <tr
                   key={record.id}
-                  className="odd:bg-white even:bg-slate-50/70 hover:bg-indigo-50/70"
+                  onClick={() => openImageViewer(record)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      openImageViewer(record);
+                    }
+                  }}
+                  tabIndex={0}
+                  aria-label={`Show image preview for processed data record ${record.id}`}
+                  className="cursor-pointer odd:bg-white even:bg-slate-50/70 hover:bg-indigo-50/70 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-indigo-600"
                 >
                   <td className="whitespace-nowrap border-b border-slate-100 px-2.5 py-2">
                     {record.id}
@@ -798,12 +1736,28 @@ function ProcessedDataTab({
                         key={column.key}
                         className="max-w-48 border-b border-slate-100 px-2.5 py-2 align-top"
                       >
-                        <span
-                          className="block max-w-48 truncate"
-                          title={value || undefined}
-                        >
-                          {value || <span className="text-slate-300">—</span>}
-                        </span>
+                        {column.key === "Full path" && value ? (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openFolderInExplorer(record);
+                            }}
+                            title={`Open folder: ${value}`}
+                            className="block max-w-48 truncate text-indigo-600 underline decoration-dotted underline-offset-2 hover:text-indigo-800 focus-visible:outline-2 focus-visible:outline-indigo-600"
+                          >
+                            {value}
+                          </button>
+                        ) : (
+                          <span
+                            className="block max-w-48 truncate"
+                            title={value || undefined}
+                          >
+                            {value || (
+                              <span className="text-slate-300">—</span>
+                            )}
+                          </span>
+                        )}
                       </td>
                     );
                   })}
@@ -814,7 +1768,10 @@ function ProcessedDataTab({
                     <div className="flex items-center justify-center gap-1">
                       <button
                         type="button"
-                        onClick={() => setSelectedRecord(record)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedRecord(record);
+                        }}
                         aria-label={`More details for processed data record ${record.id}`}
                         title="View full details"
                         className="inline-flex size-8 items-center justify-center rounded-md text-slate-600 transition hover:bg-indigo-100 hover:text-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
@@ -823,7 +1780,10 @@ function ProcessedDataTab({
                       </button>
                       <button
                         type="button"
-                        onClick={() => onNavigateRecord(record)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onNavigateRecord(record);
+                        }}
                         aria-label={`Highlight processed data record ${record.id} on map`}
                         title="Highlight location on map"
                         className="inline-flex size-8 items-center justify-center rounded-md text-indigo-700 transition hover:bg-indigo-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
@@ -837,6 +1797,14 @@ function ProcessedDataTab({
             </tbody>
           </table>
         </div>
+      )}
+      {folderOpenError && (
+        <p
+          role="alert"
+          className="border-t border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700"
+        >
+          {folderOpenError}
+        </p>
       )}
     </section>
     <dialog
@@ -931,7 +1899,7 @@ function ProcessedDataTab({
 function MasterFile() {
   const [activeTab, setActiveTab] = useState("master");
   const [selectedMunicipality, setSelectedMunicipality] = useState(null);
-  const [selectedBarangay, setSelectedBarangay] = useState(null);  
+  const [selectedBarangayState, setSelectedBarangay] = useState(null);
   const [municipalityFilter, setMunicipalityFilter] = useState("");
   const [barangayFilter, setBarangayFilter] = useState("");
   const [districtFilter, setDistrictFilter] = useState("");
@@ -957,6 +1925,18 @@ function MasterFile() {
   const [processedLocationCounts, setProcessedLocationCounts] = useState(() =>
     getLocationCounts([], (record) => record.PSCG)
   );
+  const [selectedGpsLocations, setSelectedGpsLocations] = useState([]);
+  const [mapNavigationError, setMapNavigationError] = useState("");
+  const [loadingGpsLocations, setLoadingGpsLocations] = useState(false);
+  const [selectedNavigationPSGC, setSelectedNavigationPSGC] = useState("");
+  const gpsRequestIdRef = useRef(0);
+  const selectedBarangay = selectedNavigationPSGC
+    ? barangayData?.features.find(
+        (feature) =>
+          normalizePSGCCode(feature.properties?.PSGC_CODE) ===
+          normalizePSGCCode(selectedNavigationPSGC)
+      ) || null
+    : selectedBarangayState;
 
   const handleRawRecordsLoaded = useCallback((records) => {
     setRawLocationCounts(getLocationCounts(records, (record) => record.pscg));
@@ -1176,31 +2156,156 @@ useEffect(() => {
     });
 }, []);
 
-  function handleHighlightRawRecord(record) {
-    const pscg = String(record.pscg ?? "").trim();
-    const municipality = getMunicipalityFromPSGC(pscg);
+  async function handleHighlightRawRecord(record) {
+    const requestId = gpsRequestIdRef.current + 1;
+    gpsRequestIdRef.current = requestId;
+    setSelectedGpsLocations([]);
+    setMapNavigationError("");
+    setLoadingGpsLocations(true);
+    const pscg = normalizePSGCCode(record.pscg);
     const barangay = barangayData?.features.find(
       (feature) =>
-        String(feature.properties?.PSGC_CODE ?? "").trim() === pscg
+        normalizePSGCCode(feature.properties?.PSGC_CODE) === pscg
     );
+    const municipality =
+      barangay?.properties?.LGU ?? getMunicipalityFromPSGC(pscg);
 
     setSelectedMunicipality(municipality);
-    setSelectedBarangay(barangay || null);
+    setSelectedNavigationPSGC(pscg);
+    setSelectedBarangay(null);
+
+    try {
+      const token = localStorage.getItem("access_token");
+      const response = await api.get(
+        `/raw-data/${record.raw_data_id}/locations`,
+        {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        }
+      );
+      if (requestId !== gpsRequestIdRef.current) {
+        return;
+      }
+
+      const locations = (response.data?.locations ?? []).filter(
+        ({ latitude, longitude }) =>
+          Number.isFinite(Number(latitude)) &&
+          Number.isFinite(Number(longitude)) &&
+          Math.abs(Number(latitude)) <= 90 &&
+          Math.abs(Number(longitude)) <= 180
+      );
+
+      if (locations.length === 0) {
+        setMapNavigationError(
+          "No GPS coordinates were found in this record's images."
+        );
+        return;
+      }
+
+      setSelectedGpsLocations(
+        locations.map((location) => ({
+          ...location,
+          recordId: record.raw_data_id,
+          record,
+          dataType: "raw",
+          latitude: Number(location.latitude),
+          longitude: Number(location.longitude),
+        }))
+      );
+    } catch (error) {
+      if (requestId !== gpsRequestIdRef.current) {
+        return;
+      }
+
+      const detail = error.response?.data?.detail;
+      setMapNavigationError(
+        (typeof detail === "string" ? detail : detail?.message) ||
+          "Unable to load GPS coordinates for this record."
+      );
+    } finally {
+      if (requestId === gpsRequestIdRef.current) {
+        setLoadingGpsLocations(false);
+      }
+    }
   }
 
-  function handleHighlightProcessedRecord(record) {
-    const pscg = String(record.PSCG ?? "").trim();
-    const municipality = getMunicipalityFromPSGC(pscg);
+  async function handleHighlightProcessedRecord(record) {
+    const requestId = gpsRequestIdRef.current + 1;
+    gpsRequestIdRef.current = requestId;
+    setSelectedGpsLocations([]);
+    setMapNavigationError("");
+    setLoadingGpsLocations(true);
+    const pscg = normalizePSGCCode(record.PSCG);
     const barangay = barangayData?.features.find(
       (feature) =>
-        String(feature.properties?.PSGC_CODE ?? "").trim() === pscg
+        normalizePSGCCode(feature.properties?.PSGC_CODE) === pscg
     );
+    const municipality =
+      barangay?.properties?.LGU ?? getMunicipalityFromPSGC(pscg);
 
     setSelectedMunicipality(municipality);
-    setSelectedBarangay(barangay || null);
+    setSelectedNavigationPSGC(pscg);
+    setSelectedBarangay(null);
+
+    try {
+      const token = localStorage.getItem("access_token");
+      const response = await api.get(
+        `/processed-data/${record.id}/locations`,
+        {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        }
+      );
+      if (requestId !== gpsRequestIdRef.current) {
+        return;
+      }
+
+      const locations = (response.data?.locations ?? []).filter(
+        ({ latitude, longitude }) =>
+          Number.isFinite(Number(latitude)) &&
+          Number.isFinite(Number(longitude)) &&
+          Math.abs(Number(latitude)) <= 90 &&
+          Math.abs(Number(longitude)) <= 180
+      );
+
+      if (locations.length === 0) {
+        setMapNavigationError(
+          "No GPS coordinates were found in this record's images."
+        );
+        return;
+      }
+
+      setSelectedGpsLocations(
+        locations.map((location) => ({
+          ...location,
+          recordId: record.id,
+          record,
+          dataType: "processed",
+          latitude: Number(location.latitude),
+          longitude: Number(location.longitude),
+        }))
+      );
+    } catch (error) {
+      if (requestId !== gpsRequestIdRef.current) {
+        return;
+      }
+
+      const detail = error.response?.data?.detail;
+      setMapNavigationError(
+        (typeof detail === "string" ? detail : detail?.message) ||
+          "Unable to load GPS coordinates for this record."
+      );
+    } finally {
+      if (requestId === gpsRequestIdRef.current) {
+        setLoadingGpsLocations(false);
+      }
+    }
   }
 
   function handleMapMunicipalityClick(feature) {
+    gpsRequestIdRef.current += 1;
+    setLoadingGpsLocations(false);
+    setSelectedGpsLocations([]);
+    setMapNavigationError("");
+    setSelectedNavigationPSGC("");
     const municipalityName = feature.properties?.LGU ?? null;
     const municipalityBarangay = barangayData?.features.find(
       (barangay) =>
@@ -1222,7 +2327,22 @@ useEffect(() => {
   }
 
   function handleMapBarangayClick(feature) {
+    gpsRequestIdRef.current += 1;
+    setLoadingGpsLocations(false);
+    setSelectedGpsLocations([]);
+    setMapNavigationError("");
+    setSelectedNavigationPSGC("");
     const psgc = String(feature.properties?.PSGC_CODE ?? "").trim();
+    const selectedPSGC = String(
+      selectedBarangay?.properties?.PSGC_CODE ?? ""
+    ).trim();
+
+    if (psgc && psgc === selectedPSGC) {
+      setSelectedBarangay(null);
+      setBarangayFilter("");
+      return;
+    }
+
     const municipality =
       feature.properties?.LGU ?? getMunicipalityFromPSGC(psgc);
     const district = String(feature.properties?.DISTRICT ?? "").trim();
@@ -1313,13 +2433,23 @@ useEffect(() => {
               <button
                 type="button"
                 onClick={() => {
+                  gpsRequestIdRef.current += 1;
+                  setLoadingGpsLocations(false);
                   setSelectedMunicipality(null);
                   setSelectedBarangay(null);
+                  setSelectedNavigationPSGC("");
+                  setSelectedGpsLocations([]);
+                  setMapNavigationError("");
                   setMunicipalityFilter("");
                   setBarangayFilter("");
                   setDistrictFilter("");
                 }}
-                disabled={!selectedMunicipality && !selectedBarangay}
+                disabled={
+                  !selectedMunicipality &&
+                  !selectedBarangay &&
+                  selectedGpsLocations.length === 0 &&
+                  !mapNavigationError
+                }
                 className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <X aria-hidden="true" className="size-3.5" />
@@ -1337,10 +2467,11 @@ useEffect(() => {
               attribution="&copy; OpenStreetMap contributors"
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             />
+            <GpsLocationLayer locations={selectedGpsLocations} />
             {municipalityData && (
               <Pane name="municipality-features" style={{ zIndex: 410 }}>
                 <GeoJSON
-                  key={`${activeTab}-${selectedMunicipality || "none"}-${municipalityCountsKey}`}
+                  key={`${activeTab}-${selectedMunicipality || "none"}-${selectedBarangay?.properties?.PSGC_CODE || "none"}-${municipalityCountsKey}`}
                   data={municipalityData}
                   style={(feature) => {
                     const isSelected =
@@ -1362,7 +2493,7 @@ useEffect(() => {
                       handleMapMunicipalityClick(feature)
                     );
 
-                    if (municipalityName) {
+                    if (municipalityName && !selectedBarangay) {
                       const isSelected =
                         normalizeMunicipalityName(municipalityName) ===
                         normalizeMunicipalityName(selectedMunicipality);
@@ -1462,6 +2593,20 @@ useEffect(() => {
               </>
             )}
             </MapContainer>
+            {(loadingGpsLocations || mapNavigationError) && (
+              <div
+                role={mapNavigationError ? "alert" : "status"}
+                className={`absolute right-3 top-3 z-[1000] max-w-[calc(100%-1.5rem)] rounded-lg px-3 py-2 text-sm shadow-lg ${
+                  mapNavigationError
+                    ? "bg-red-50 text-red-700"
+                    : "bg-white text-slate-700"
+                }`}
+              >
+                {loadingGpsLocations
+                  ? "Finding GPS locations…"
+                  : mapNavigationError}
+              </div>
+            )}
             {activeTab === "master" && !loading && !hasError && (
               <aside
                 aria-label="Filter master files"

@@ -11,6 +11,9 @@ from fastapi.staticfiles import StaticFiles
 from routers import auth, users, admin, locations, masterfile
 from routers import raw_data
 from routers.processed_data import router as processed_data_router
+from routers import GPSextraction
+
+
 
 
 
@@ -28,6 +31,8 @@ app.include_router(locations_router)
 app.include_router(masterfile.router)
 app.include_router(raw_data.router)
 app.include_router(processed_data_router)
+app.include_router(GPSextraction.router)
+
 
 app.add_middleware(
     CORSMiddleware,

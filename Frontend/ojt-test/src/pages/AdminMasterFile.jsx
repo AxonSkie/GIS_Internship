@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import api from "../services/api";
-import { Ellipsis, MapPin, X } from "lucide-react";
+import { Ellipsis, MapPin, Pencil, X } from "lucide-react";
 
 
 
@@ -80,6 +81,202 @@ function formatValue(key, value) {
   }
 
   return typeof value === "object" ? JSON.stringify(value) : String(value);
+}
+
+function getEditFieldValue(record, key) {
+  const value = record[key];
+
+  if (value == null) {
+    return "";
+  }
+
+  if (key === "creation_date" && typeof value === "string") {
+    return value.slice(0, 10);
+  }
+
+  return typeof value === "object" ? JSON.stringify(value, null, 2) : String(value);
+}
+
+function RecordEditDialog({
+  record,
+  columns: fieldColumns,
+  idField,
+  title,
+  endpoint,
+  onClose,
+  onSaved,
+}) {
+  const dialogRef = useRef(null);
+  const [formData, setFormData] = useState(() =>
+    Object.fromEntries(
+      fieldColumns
+        .filter(({ key }) => key !== idField)
+        .map(({ key }) => [key, getEditFieldValue(record, key)])
+    )
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (dialogRef.current && !dialogRef.current.open) {
+      dialogRef.current.showModal();
+    }
+  }, []);
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+
+    const payload = {};
+    try {
+      fieldColumns
+        .filter(({ key }) => key !== idField)
+        .forEach(({ key }) => {
+          const value = formData[key].trim();
+          if (key === "extent" && value) {
+            payload[key] = JSON.parse(value);
+          } else {
+            payload[key] = value || null;
+          }
+        });
+
+      await api.put(endpoint, payload);
+      onSaved(payload);
+      dialogRef.current?.close();
+    } catch (requestError) {
+      const detail = requestError.response?.data?.detail;
+      setError(
+        (typeof detail === "string" ? detail : detail?.message) ||
+          (requestError instanceof SyntaxError
+            ? "Extent must contain valid JSON."
+            : "Unable to save this record. Please try again.")
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return createPortal((
+    <dialog
+      ref={dialogRef}
+      aria-labelledby="record-edit-title"
+      onClose={onClose}
+      onClick={(event) => {
+        if (event.target === event.currentTarget && !saving) {
+          event.currentTarget.close();
+        }
+      }}
+      className="fixed inset-0 m-auto max-h-[90vh] w-[calc(100%-2rem)] max-w-3xl overflow-hidden rounded-xl border-0 bg-transparent p-0 text-slate-800 shadow-2xl backdrop:bg-slate-900/50"
+    >
+      <form
+        onSubmit={handleSubmit}
+        className="flex max-h-[90vh] flex-col overflow-hidden rounded-xl bg-white"
+      >
+        <header className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold uppercase tracking-wide text-indigo-600">
+              Edit {title}
+            </p>
+            <h2
+              id="record-edit-title"
+              className="mt-1 truncate text-lg font-semibold text-slate-900"
+            >
+              Record {record[idField]}
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={() => dialogRef.current?.close()}
+            disabled={saving}
+            aria-label={`Close ${title} editor`}
+            className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800 disabled:opacity-50"
+          >
+            <X aria-hidden="true" className="size-4" />
+          </button>
+        </header>
+
+        <div className="grid gap-x-6 gap-y-4 overflow-y-auto px-5 py-4 sm:grid-cols-2">
+          {fieldColumns
+            .filter(({ key }) => key !== idField)
+            .map(({ key, label }) => {
+              const isLongText = [
+                "extent",
+                "description",
+                "remarks",
+                "keywords",
+                "data_source",
+                "processing",
+                "data_sharing_agreement_with",
+              ].includes(key);
+              const inputClass =
+                "w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-normal text-slate-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100";
+
+              return (
+                <label
+                  key={key}
+                  className={`flex flex-col gap-1 text-xs font-semibold text-slate-600 ${
+                    isLongText ? "sm:col-span-2" : ""
+                  }`}
+                >
+                  {label}
+                  {isLongText ? (
+                    <textarea
+                      rows={key === "extent" ? 4 : 3}
+                      value={formData[key]}
+                      onChange={(event) =>
+                        setFormData((current) => ({
+                          ...current,
+                          [key]: event.target.value,
+                        }))
+                      }
+                      className={`${inputClass} resize-y`}
+                    />
+                  ) : (
+                    <input
+                      type={key === "creation_date" ? "date" : "text"}
+                      value={formData[key]}
+                      onChange={(event) =>
+                        setFormData((current) => ({
+                          ...current,
+                          [key]: event.target.value,
+                        }))
+                      }
+                      className={inputClass}
+                    />
+                  )}
+                </label>
+              );
+            })}
+        </div>
+
+        <footer className="border-t border-slate-200 px-5 py-3">
+          {error && (
+            <p role="alert" className="mb-3 text-sm text-red-700">
+              {error}
+            </p>
+          )}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => dialogRef.current?.close()}
+              disabled={saving}
+              className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-wait disabled:opacity-60"
+            >
+              {saving ? "Saving…" : "Save changes"}
+            </button>
+          </div>
+        </footer>
+      </form>
+    </dialog>
+  ), document.body);
 }
 
 const municipalityPSGC = {
@@ -266,6 +463,7 @@ function RawDataTab({
   const [error, setError] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const [selectedRecord, setSelectedRecord] = useState(null);
+  const [editingRecord, setEditingRecord] = useState(null);
   const detailsDialogRef = useRef(null);
 
   useEffect(() => {
@@ -364,8 +562,36 @@ const filteredRawData = rawData.filter((record) => {
     matchesDistrict
   );
 });
-  return (
+const handleRawRecordSaved = (updatedFields) => {
+  const updatedRecords = rawData.map((record) =>
+    record.raw_data_id === editingRecord.raw_data_id
+      ? { ...record, ...updatedFields }
+      : record
+  );
+  setRawData(updatedRecords);
+  onRecordsLoaded(updatedRecords);
+  setSelectedRecord((current) =>
+    current?.raw_data_id === editingRecord.raw_data_id
+      ? { ...current, ...updatedFields }
+      : current
+  );
+  setEditingRecord(null);
+};
+return (
 <>
+
+{editingRecord && (
+<RecordEditDialog
+  key={`raw-${editingRecord.raw_data_id}`}
+  record={editingRecord}
+  columns={rawDataColumns}
+  idField="raw_data_id"
+  title="Raw Data"
+  endpoint={`/raw-data/${editingRecord.raw_data_id}`}
+  onClose={() => setEditingRecord(null)}
+  onSaved={handleRawRecordSaved}
+/>
+)}
 
 <dialog
   ref={detailsDialogRef}
@@ -566,6 +792,15 @@ const filteredRawData = rawData.filter((record) => {
                         </button>
                         <button
                           type="button"
+                          onClick={() => setEditingRecord(record)}
+                          aria-label={`Edit raw data record ${record.raw_data_id}`}
+                          title="Edit record"
+                          className="inline-flex size-8 items-center justify-center rounded-md text-indigo-700 transition hover:bg-indigo-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+                        >
+                          <Pencil aria-hidden="true" className="size-4" />
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => onHighlightRecord(record)}
                           aria-label={`Highlight raw data record ${record.raw_data_id} on map`}
                           title="Highlight location on map"
@@ -603,6 +838,7 @@ function ProcessedDataTab({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [selectedRecord, setSelectedRecord] = useState(null);
+  const [editingRecord, setEditingRecord] = useState(null);
   const detailsDialogRef = useRef(null);
 
   const reloadRecords = async () => {
@@ -700,8 +936,36 @@ function ProcessedDataTab({
     );
     });
 
+  const handleProcessedRecordSaved = (updatedFields) => {
+    const updatedRecords = records.map((record) =>
+      record.id === editingRecord.id
+        ? { ...record, ...updatedFields }
+        : record
+    );
+    setRecords(updatedRecords);
+    onRecordsLoaded(updatedRecords);
+    setSelectedRecord((current) =>
+      current?.id === editingRecord.id
+        ? { ...current, ...updatedFields }
+        : current
+    );
+    setEditingRecord(null);
+  };
+
   return (
     <>
+    {editingRecord && (
+      <RecordEditDialog
+        key={`processed-${editingRecord.id}`}
+        record={editingRecord}
+        columns={processedDataColumns}
+        idField="id"
+        title="Processed Data"
+        endpoint={`/processed-data/${editingRecord.id}`}
+        onClose={() => setEditingRecord(null)}
+        onSaved={handleProcessedRecordSaved}
+      />
+    )}
     <section
       aria-label="Processed data records"
       className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"
@@ -820,6 +1084,15 @@ function ProcessedDataTab({
                         className="inline-flex size-8 items-center justify-center rounded-md text-slate-600 transition hover:bg-indigo-100 hover:text-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
                       >
                         <Ellipsis aria-hidden="true" className="size-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingRecord(record)}
+                        aria-label={`Edit processed data record ${record.id}`}
+                        title="Edit record"
+                        className="inline-flex size-8 items-center justify-center rounded-md text-indigo-700 transition hover:bg-indigo-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+                      >
+                        <Pencil aria-hidden="true" className="size-4" />
                       </button>
                       <button
                         type="button"
@@ -948,6 +1221,7 @@ function MasterFile() {
   const [processedDateFrom, setProcessedDateFrom] = useState("");
   const [processedDateTo, setProcessedDateTo] = useState("");
   const [selectedFile, setSelectedFile] = useState(null);
+  const [editingFile, setEditingFile] = useState(null);
   const detailsDialogRef = useRef(null);
   const [municipalityData, setMunicipalityData] = useState(null);
   const [barangayData, setBarangayData] = useState(null);
@@ -979,6 +1253,21 @@ function MasterFile() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleMasterFileSaved = (updatedFields) => {
+    const updatedFiles = masterFiles.map((file) =>
+      file.file_id === editingFile.file_id
+        ? { ...file, ...updatedFields }
+        : file
+    );
+    setMasterFiles(updatedFiles);
+    setSelectedFile((current) =>
+      current?.file_id === editingFile.file_id
+        ? { ...current, ...updatedFields }
+        : current
+    );
+    setEditingFile(null);
   };
 
   useEffect(() => {
@@ -1790,6 +2079,18 @@ useEffect(() => {
         <DataTabs activeTab={activeTab} onTabChange={setActiveTab} />
         <div hidden={activeTab !== "master"}>
           <>
+        {editingFile && (
+          <RecordEditDialog
+            key={`master-${editingFile.file_id}`}
+            record={editingFile}
+            columns={columns}
+            idField="file_id"
+            title="Master File"
+            endpoint={`/masterfile/${editingFile.file_id}`}
+            onClose={() => setEditingFile(null)}
+            onSaved={handleMasterFileSaved}
+          />
+        )}
         <section
           aria-label="Master file records"
           className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"
@@ -1909,6 +2210,15 @@ useEffect(() => {
                               className="inline-flex size-8 items-center justify-center rounded-md text-slate-600 transition hover:bg-indigo-100 hover:text-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
                             >
                               <Ellipsis aria-hidden="true" className="size-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingFile(file)}
+                              aria-label={`Edit master file ${file.file_name || file.file_id}`}
+                              title="Edit record"
+                              className="inline-flex size-8 items-center justify-center rounded-md text-indigo-700 transition hover:bg-indigo-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+                            >
+                              <Pencil aria-hidden="true" className="size-4" />
                             </button>
                             <button
                               type="button"

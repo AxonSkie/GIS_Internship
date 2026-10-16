@@ -4,11 +4,15 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from io import BytesIO
 import pandas as pd
+import os
+import subprocess
+from pathlib import Path
+from fastapi.responses import FileResponse
+from fastapi import Query
 
 from database import get_db
 from models import RawData
-from auth import get_current_admin
-from auth import get_current_editor_or_admin
+from auth import get_current_admin, get_current_editor_or_admin, get_current_user
 
 router = APIRouter(
     prefix="/raw-data",
@@ -27,6 +31,158 @@ def get_raw_data(db: Session = Depends(get_db)):
         }
         for record in records
     ]
+
+
+@router.get("/{record_id}/preview")
+def preview_raw_data_file(
+    record_id: int,
+    filename: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    record = db.query(RawData).filter(
+        RawData.raw_data_id == record_id
+    ).first()
+
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Raw Data record not found.",
+        )
+
+    if not record.full_path:
+        raise HTTPException(
+            status_code=404,
+            detail="No file path is available.",
+        )
+
+    folder_path = Path(
+        os.path.expandvars(record.full_path.strip())
+    )
+
+    allowed_images = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+    }
+
+    if not folder_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Path does not exist: {folder_path}",
+        )
+
+    # If full_path points directly to an image
+    if folder_path.is_file():
+        if folder_path.suffix.lower() not in allowed_images:
+            raise HTTPException(
+                status_code=415,
+                detail="This file format cannot be previewed.",
+            )
+
+        return FileResponse(
+            path=str(folder_path),
+            media_type=allowed_images[folder_path.suffix.lower()],
+        )
+
+    if not folder_path.is_dir():
+        raise HTTPException(
+            status_code=404,
+            detail="The stored path is not a file or folder.",
+        )
+
+    # Find images directly inside the folder
+    images = sorted(
+        [
+            item for item in folder_path.iterdir()
+            if item.is_file()
+            and item.suffix.lower() in allowed_images
+        ],
+        key=lambda item: item.name.lower(),
+    )
+
+    if not images:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "message": "No JPG, JPEG, or PNG images found.",
+                "folder_path": str(folder_path),
+            },
+        )
+
+    # Return the selected image after validating its filename
+    if filename is not None:
+        matching_image = next(
+            (item for item in images if item.name == filename),
+            None,
+        )
+
+        if matching_image is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Image not found in this folder.",
+            )
+
+        return FileResponse(
+            path=str(matching_image),
+            media_type=allowed_images[
+                matching_image.suffix.lower()
+            ],
+        )
+
+    # Otherwise, return the list of available images
+    return {
+        "message": "Images found in this folder.",
+        "folder_path": str(folder_path),
+        "count": len(images),
+        "images": [
+            {
+                "filename": item.name,
+                "preview_url": (
+                    f"/raw-data/{record_id}/preview"
+                    f"?filename={item.name}"
+                ),
+            }
+            for item in images
+        ],
+    }
+
+@router.post("/{record_id}/open-folder")
+def open_raw_data_folder(
+    record_id: int,
+    db: Session = Depends(get_db),
+        current_user: dict = Depends(get_current_user),
+
+):
+    record = (
+        db.query(RawData)
+        .filter(RawData.raw_data_id == record_id)
+        .first()
+    )
+
+    if not record:
+        raise HTTPException(status_code=404, detail="Record not found.")
+
+    if not record.full_path:
+        raise HTTPException(status_code=400, detail="No folder path available.")
+
+    folder_path = Path(os.path.expandvars(record.full_path.strip()))
+
+    if not folder_path.exists():
+        raise HTTPException(status_code=404, detail="Folder does not exist.")
+
+    if not folder_path.is_dir():
+        raise HTTPException(status_code=400, detail="The path is not a folder.")
+
+    try:
+        os.startfile(str(folder_path))
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Could not open the folder in File Explorer.",
+        ) from exc
+
+    return {"message": "Folder opened successfully."}
 
 
 @router.post("/import")
@@ -130,7 +286,7 @@ def update_raw_data(
     record_id: int,
     data: dict,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_editor_or_admin),
+    current_user: dict = Depends(get_current_admin),
 ):
     allowed_fields = {
         "main_folder",

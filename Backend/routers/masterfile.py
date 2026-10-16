@@ -193,7 +193,7 @@ def update_record(
     record_id: int,
     data: dict = Body(...),
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_editor_or_admin),
+    current_user: dict = Depends(get_current_admin),
 ):
     allowed_fields = {
         "file_name",

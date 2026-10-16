@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import api from "../services/api";
 import "./admin.css";
+import { Link } from "react-router-dom";
+
 
 function Admin() {
   const [users, setUsers] = useState([]);
@@ -21,7 +23,8 @@ function Admin() {
   }, []);
 
 
-  useEffect(() => {
+ 
+useEffect(() => {
   const handlePageShow = async () => {
     const token = localStorage.getItem("access_token");
 
@@ -32,12 +35,17 @@ function Admin() {
 
     try {
       const response = await api.get("/users/me", {
-  headers: {
-    Authorization: `Bearer ${token}`,
-  },
-});
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
 
-setCurrentUser(response.data);
+      if (response.data.role !== "admin") {
+        window.location.replace("/user");
+        return;
+      }
+
+      setCurrentUser(response.data);
     } catch {
       localStorage.removeItem("access_token");
       window.location.replace("/login");
@@ -222,6 +230,13 @@ setCurrentUser(response.data);
           <span className="admin-topbar-label"><button onClick={handleLogout}>
   Logout
 </button></span>
+
+<Link
+  to="/admin/masterfile"
+  className="rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700"
+>
+  Manage Master File
+</Link>
         </header>
 
         <section className="admin-intro" aria-labelledby="admin-title">

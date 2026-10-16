@@ -7,6 +7,7 @@ import ProtectedRoute from "./components/Protectedroute";
 import User from "./pages/user";
 import AdminRoute from "./components/AdminRoute";
 import MasterFile from "./pages/MasterFile";
+import AdminMasterFile from "./pages/AdminMasterFile";
 
 function App() {
   return (
@@ -41,6 +42,17 @@ function App() {
     </AdminRoute>
   }
 />
+
+
+<Route
+  path="/admin/masterfile"
+  element={
+    <AdminRoute>
+      <AdminMasterFile />
+    </AdminRoute>
+  }
+/>
+
 
 
       </Routes>
